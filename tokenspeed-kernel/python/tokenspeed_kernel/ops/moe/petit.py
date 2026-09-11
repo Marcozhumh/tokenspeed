@@ -55,6 +55,7 @@ class _Profile:
 _PROFILES = (
     _Profile(128, 4, 2880, 2880, 3072, True),
     _Profile(256, 8, 7168, 2048, 2048, False),
+    _Profile(384, 8, 7168, 2048, 2048, False),
 )
 
 
