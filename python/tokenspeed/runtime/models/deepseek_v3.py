@@ -289,7 +289,12 @@ class DeepseekV3MoE(nn.Module):
         self.layer_index = layer_index
         self.n_shared_experts = config.n_shared_experts
         self.routed_scaling_factor = config.routed_scaling_factor
-        self.stream_fork = StreamFork(alt_stream)
+        # Petit with auxiliary-stream shared experts can corrupt graph replay
+        # on ROCm. Keep both branches on the main stream until that interaction
+        # is resolved; prefill/decode graphs and speculation remain enabled.
+        self.stream_fork = StreamFork(
+            None if get_all2all_backend().is_petit() else alt_stream
+        )
 
         if self.mapping.moe.ep_size > config.n_routed_experts:
             raise ValueError(

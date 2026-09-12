@@ -52,10 +52,14 @@ class _Profile:
     has_bias: bool
 
 
+_V4_PRO_PROFILE = _Profile(384, 6, 7168, 3072, 3072, False)
+
+
 _PROFILES = (
     _Profile(128, 4, 2880, 2880, 3072, True),
     _Profile(256, 8, 7168, 2048, 2048, False),
     _Profile(384, 8, 7168, 2048, 2048, False),
+    _V4_PRO_PROFILE,
 )
 
 
@@ -155,7 +159,9 @@ def _validate_layer(w: torch.nn.Module) -> _Profile:
         if w.w13_input_layout != "concatenated":
             raise ValueError("Petit DeepSeek MegaMoE requires concatenated W13 input")
         arg = getattr(w, "swiglu_arg", None)
-        if arg is not None and arg.limit is not None:
+        if profile == _V4_PRO_PROFILE and getattr(arg, "limit", None) != 10.0:
+            raise ValueError("Petit V4-Pro requires activation clamp 10.0")
+        if profile != _V4_PRO_PROFILE and getattr(arg, "limit", None) is not None:
             raise ValueError(
                 "Petit DeepSeek MegaMoE does not support activation clamps"
             )
@@ -207,7 +213,11 @@ def _get_workspace(device: torch.device, profile: _Profile) -> _Workspace:
         activation_function=(
             petit_kernel.MegaMoeActivationFunction.swiglu
             if profile.has_bias
-            else petit_kernel.MegaMoeActivationFunction.silu
+            else (
+                petit_kernel.MegaMoeActivationFunction.silu_clamp10
+                if profile == _V4_PRO_PROFILE
+                else petit_kernel.MegaMoeActivationFunction.silu
+            )
         ),
         stages=petit_kernel.MegaMoeStages.two_stage,
         inter_dim=profile.inter_dim,

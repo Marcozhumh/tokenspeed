@@ -801,6 +801,47 @@ backends must both be Petit because they share one all-to-all backend. DeepSeek
 V3 activation clamps, nonstandard SiLU alpha, and expert biases are not
 supported.
 
+Kimi K2.5 MXFP4 also supports Petit with 384 experts, top-8 routing, hidden
+size 7168, and intermediate size 2048. DeepSeek V3 and Kimi shared experts
+execute on the main stream with Petit: auxiliary-stream execution has produced
+corrupted outputs during ROCm graph replay. Prefill/decode graphs and EAGLE3
+remain supported; shared-expert computation does not overlap the routed experts.
+
+### DeepSeek V4-Pro with Petit
+
+V4-Pro can use the Petit integration on one 8-GPU AMD CDNA4 node with
+serialized MXFP4 routed experts and BF16 activations. It requires a
+`petit_kernel` build exposing `MegaMoeActivationFunction.silu_clamp10` and its
+V4-Pro MegaMoE kernels. TokenSpeed requires the checkpoint's `swiglu_limit`
+to be 10. Routed experts compute `silu(min(gate, 10)) * clamp(up, -10, 10)`
+before intermediate MXFP4 quantization. There is no unclamped fallback.
+V4-Flash is not supported by this integration.
+
+```bash
+tokenspeed serve deepseek-ai/DeepSeek-V4-Pro \
+  --world-size 8 \
+  --nprocs-per-node 8 \
+  --tensor-parallel-size 1 \
+  --data-parallel-size 8 \
+  --expert-parallel-size 8 \
+  --dense-tp-size 1 \
+  --moe-tp-size 1 \
+  --dtype bfloat16 \
+  --moe-backend petit \
+  --all2all-backend petit \
+  --kv-cache-dtype fp8_e4m3 \
+  --attention-use-fp4-indexer-cache \
+  --chunked-prefill-size 1024 \
+  --max-prefill-tokens 1024 \
+  --disable-kvstore
+```
+
+The V4-Pro profile uses 384 routed experts, top-6 selection, hidden size 7168,
+and intermediate size 3072. Hash and learned routing retain local token order;
+shared experts execute locally with dense TP1. The existing Petit placement,
+1024-token per-rank capacity, and speculative-backend restrictions above apply.
+Petit remains an optional dependency behind `tokenspeed-kernel`.
+
 ## DeepSeek V4-Flash / V4-Pro
 
 DeepSeek V4 needs FP8 KV cache, the DeepGEMM `mega_moe` experts, and the FP4

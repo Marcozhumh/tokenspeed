@@ -166,3 +166,84 @@ def test_weight_preprocessor_repacks_and_releases_source_parameters() -> None:
         "w2_weight_scale",
     ):
         assert getattr(module, name) is None
+
+
+def _v4_layer(limit: float | None) -> SimpleNamespace:
+    return SimpleNamespace(
+        num_experts=384,
+        top_k=6,
+        hidden_size=7168,
+        intermediate_size=3072,
+        ep_size=8,
+        tp_size=1,
+        num_local_experts=48,
+        activation="swiglu",
+        swiglu_beta=None,
+        swiglu_arg=SimpleNamespace(alpha=None, limit=limit),
+        w13_input_layout="concatenated",
+    )
+
+
+def test_v4_profile_requires_clamp10() -> None:
+    assert _validate_layer(_v4_layer(10.0)).num_experts == 384
+    for limit in (None, 7.0, 11.0):
+        with pytest.raises(ValueError, match="requires activation clamp 10.0"):
+            _validate_layer(_v4_layer(limit))
+
+
+def test_v4_workspace_selects_clamped_silu() -> None:
+    from tokenspeed_kernel.ops.moe.petit import _get_workspace
+
+    config = mock.Mock(
+        return_value=SimpleNamespace(input_views=lambda heap, rows: (heap, rows))
+    )
+    kernel = SimpleNamespace(
+        MegaMoeConfig=config,
+        MegaMoeActivation=SimpleNamespace(mxfp4=object()),
+        MegaMoeActivationFunction=SimpleNamespace(silu_clamp10=object()),
+        MegaMoeStages=SimpleNamespace(two_stage=object()),
+        create_vmm_symmetric_heap=mock.Mock(return_value=object()),
+    )
+    with (
+        mock.patch("tokenspeed_kernel.ops.moe.petit._workspace_cache", {}),
+        mock.patch(
+            "tokenspeed_kernel.ops.moe.petit.dist.is_initialized", return_value=True
+        ),
+        mock.patch(
+            "tokenspeed_kernel.ops.moe.petit.dist.get_world_size", return_value=8
+        ),
+        mock.patch(
+            "tokenspeed_kernel.ops.moe.petit._import_petit_kernel", return_value=kernel
+        ),
+    ):
+        workspace = _get_workspace(
+            torch.device("cuda:0"), _validate_layer(_v4_layer(10.0))
+        )
+    assert workspace.inputs[1] == 1024
+    config.assert_called_once_with(
+        world_size=8,
+        num_experts=384,
+        topk=6,
+        model_dim=7168,
+        activation=kernel.MegaMoeActivation.mxfp4,
+        activation_function=kernel.MegaMoeActivationFunction.silu_clamp10,
+        stages=kernel.MegaMoeStages.two_stage,
+        inter_dim=3072,
+        has_bias=False,
+    )
+    kernel.create_vmm_symmetric_heap.assert_called_once_with(8)
+
+
+@pytest.mark.parametrize("num_experts", [256, 384])
+def test_existing_deepseek_profiles_still_require_unclamped_silu(
+    num_experts: int,
+) -> None:
+    layer = _v4_layer(None)
+    layer.num_experts = num_experts
+    layer.num_local_experts = num_experts // 8
+    layer.top_k = 8
+    layer.intermediate_size = 2048
+    assert _validate_layer(layer).num_experts == num_experts
+    layer.swiglu_arg.limit = 10.0
+    with pytest.raises(ValueError, match="does not support activation clamps"):
+        _validate_layer(layer)

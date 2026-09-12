@@ -231,10 +231,7 @@ class MoELayer(torch.nn.Module):
                 raise ValueError(
                     "Petit MegaMoE requires serialized MXFP4 expert weights"
                 )
-            if swiglu_beta is None and swiglu_limit is not None:
-                raise ValueError(
-                    "Petit DeepSeek MegaMoE does not support activation clamps"
-                )
+            # The Petit weight preprocessor validates profile-specific clamps.
             if swiglu_beta is None and activation_alpha is not None:
                 raise ValueError(
                     "Petit DeepSeek MegaMoE does not support nonstandard SiLU alpha"
