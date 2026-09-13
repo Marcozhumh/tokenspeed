@@ -18,12 +18,15 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
-from types import SimpleNamespace
+import runpy
+from pathlib import Path
+from types import ModuleType, SimpleNamespace
 from unittest import mock
 
 import pytest
 import torch
 from tokenspeed_kernel.ops.moe.petit import (
+    _import_petit_kernel,
     _Profile,
     _validate_layer,
     petit_mxfp4_megamoe_weights,
@@ -247,3 +250,27 @@ def test_existing_deepseek_profiles_still_require_unclamped_silu(
     layer.swiglu_arg.limit = 10.0
     with pytest.raises(ValueError, match="does not support activation clamps"):
         _validate_layer(layer)
+
+
+def test_import_petit_kernel_returns_available_module() -> None:
+    kernel = ModuleType("petit_kernel")
+    with mock.patch.dict("sys.modules", {"petit_kernel": kernel}):
+        assert _import_petit_kernel() is kernel
+
+
+def test_petit_integration_import_is_lazy() -> None:
+    import tokenspeed_kernel.ops.moe.petit as integration
+
+    with (
+        mock.patch.dict("sys.modules", {"petit_kernel": None}),
+        mock.patch(
+            "tokenspeed_kernel.registry.register_kernel",
+            side_effect=lambda family, operation, **kwargs: lambda function: function,
+        ),
+    ):
+        namespace = runpy.run_path(str(Path(integration.__file__)))
+        with pytest.raises(
+            RuntimeError, match="petit_kernel is not installed"
+        ) as error:
+            namespace["_import_petit_kernel"]()
+        assert isinstance(error.value.__cause__, ImportError)

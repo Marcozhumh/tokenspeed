@@ -31,15 +31,31 @@ import torch.distributed as dist
 from tokenspeed_kernel.platform import ArchVersion, CapabilityRequirement
 from tokenspeed_kernel.registry import Priority, register_kernel
 from tokenspeed_kernel.signature import format_signatures
-from tokenspeed_kernel.thirdparty.petit import (
-    import_petit_kernel as _import_petit_kernel,
-)
 
 _WORLD_SIZE = 8
 _MAX_TOKENS_PER_RANK = 1024
 _GPT_OSS_SWIGLU_ALPHA = 1.702
 _GPT_OSS_SWIGLU_LIMIT = 7.0
 _GPT_OSS_SWIGLU_BETA = 1.0
+
+
+def _import_petit_kernel():
+    """Import and return the optional :mod:`petit_kernel` module.
+
+    Returns:
+        The imported ``petit_kernel`` module.
+
+    Raises:
+        RuntimeError: If ``petit_kernel`` is not installed.
+    """
+    try:
+        import petit_kernel
+    except ImportError as exc:
+        raise RuntimeError(
+            "Petit MegaMoE was selected, but petit_kernel is not installed. "
+            "Install a petit_kernel build with MegaMoeConfig support in this environment."
+        ) from exc
+    return petit_kernel
 
 
 @dataclass(frozen=True)

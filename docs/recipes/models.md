@@ -764,9 +764,11 @@ tokenspeed serve openai/gpt-oss-120b \
 ### Petit MegaMoE on AMD CDNA4
 
 Petit provides a fused expert communication-and-compute path for serialized
-MXFP4 GPT-OSS 120B and DeepSeek V3 checkpoints. It requires an optional
-`petit_kernel` build that provides `MegaMoeConfig`, and currently supports one
-8-GPU AMD CDNA4 (`gfx950`) node only. Select Petit for both backend roles:
+MXFP4 GPT-OSS 120B and DeepSeek V3 checkpoints. ROCm installations of
+`tokenspeed-kernel` include `petit-kernel==0.0.5` through the ROCm third-party
+requirements. Petit is imported only when its backend is used; CUDA installations
+do not require it. The backend requires `MegaMoeConfig` support and currently
+supports one 8-GPU AMD CDNA4 (`gfx950`) node only. Select Petit for both backend roles:
 
 ```bash
 HIP_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 \
