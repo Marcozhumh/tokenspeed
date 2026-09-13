@@ -324,7 +324,8 @@ def test_v4_empty_routing_has_valid_shapes() -> None:
     assert scores.shape == (0, 384)
 
 
-def test_v4_petit_uses_dense_shared_experts_and_mxfp4_loader() -> None:
+@pytest.mark.parametrize("backend_name", ["PETIT", "AUTO"])
+def test_v4_shared_expert_stream_placement_and_mxfp4_loader(backend_name: str) -> None:
     from tokenspeed.runtime.layers.moe.utils import MoeBackend
     from tokenspeed.runtime.layers.quantization import Fp8Config, Mxfp4Config
     from tokenspeed.runtime.models import deepseek_v4 as model
@@ -345,16 +346,24 @@ def test_v4_petit_uses_dense_shared_experts_and_mxfp4_loader() -> None:
         moe=SimpleNamespace(ep_size=8, tp_size=1, tp_ep_size=8, tp_rank=0, ep_rank=0),
     )
     quant = Fp8Config(is_checkpoint_fp8_serialized=True, weight_block_size=[128, 128])
+    backend = MoeBackend[backend_name]
+    aux_stream = object()
     with (
-        mock.patch.object(model, "get_moe_backend", return_value=MoeBackend.PETIT),
+        mock.patch.object(model, "get_moe_backend", return_value=backend),
+        mock.patch.object(model, "StreamFork") as stream_fork,
         mock.patch.dict(model.global_server_args_dict, {"ep_num_redundant_experts": 0}),
         mock.patch.object(model, "DeepseekV4MoEGate"),
         mock.patch.object(model, "DeepseekV4MLP") as shared,
         mock.patch.object(model, "MoELayer") as experts,
         mock.patch.object(model, "TopK"),
     ):
-        model.DeepseekV4MoE(config, mapping, quant, 0, "model.layers.0.ffn", None)
-    assert shared.call_args.kwargs["is_shared_expert"] is False
+        model.DeepseekV4MoE(config, mapping, quant, 0, "model.layers.0.ffn", aux_stream)
+    stream_fork.assert_called_once_with(
+        None if backend is MoeBackend.PETIT else aux_stream
+    )
+    assert shared.call_args.kwargs["is_shared_expert"] is (
+        backend is not MoeBackend.PETIT
+    )
     assert shared.call_args.kwargs["swiglu_limit"] == 10.0
     args = experts.call_args.kwargs
     assert isinstance(args["quant_config"], Mxfp4Config)

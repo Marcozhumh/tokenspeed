@@ -1896,10 +1896,11 @@ class DeepseekV4MoE(nn.Module):
             raise ValueError(
                 f"Unsupported DeepSeek V4 MoE scoring: {self.scoring_func}"
             )
-        self.stream_fork = StreamFork(aux_stream)
-
         self.use_mega_moe = get_moe_backend().is_mega_moe()
         self.use_petit = get_moe_backend().is_petit()
+        # Match V3's safeguard against Petit/shared-expert overlap corrupting
+        # ROCm graph replay. Graph capture remains enabled on the main stream.
+        self.stream_fork = StreamFork(None if self.use_petit else aux_stream)
         if mapping.moe.ep_size > 1:
             if global_server_args_dict.get("enable_eplb", False):
                 raise ValueError(

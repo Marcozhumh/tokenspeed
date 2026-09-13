@@ -840,7 +840,10 @@ tokenspeed serve deepseek-ai/DeepSeek-V4-Pro \
 
 The V4-Pro profile uses 384 routed experts, top-6 selection, hidden size 7168,
 and intermediate size 3072. Hash and learned routing retain local token order;
-shared experts execute locally with dense TP1. The existing Petit placement,
+shared experts execute locally with dense TP1 on the main stream. V4-Pro applies
+the same Petit shared-expert stream safeguard as V3 to avoid the overlap
+implicated in ROCm graph-replay corruption; graph capture remains enabled.
+The existing Petit placement,
 1024-token per-rank capacity, and speculative-backend restrictions above apply.
 Petit remains an optional dependency behind `tokenspeed-kernel`.
 
