@@ -305,7 +305,6 @@ class EventLoop:
             prefix_granularity=geometry.prefix_granularity,
             num_host_pages=num_host_pages,
             disable_l2_cache=not server_args.enable_kvstore,
-            enable_l3_storage=server_args.kvstore_storage_backend is not None,
             role=server_args.disaggregation_mode,
             enable_kv_cache_events=self._kv_events_enabled,
             decode_input_tokens=decode_input_tokens,
@@ -856,12 +855,12 @@ class EventLoop:
         return len(self.output_processor.rid_to_state)
 
     def _get_scheduler_stats(self):
-        available = self.scheduler.available_kv_pages()
-        active = self.scheduler.active_kv_pages()
+        empty = self.scheduler.empty_lcm_blocks()
+        active = self.scheduler.active_lcm_blocks()
         return {
             "num_active_pages": active,
             "num_cached_pages": (
-                self._scheduler_cache_geometry.num_usable_pages - available
+                self._scheduler_cache_geometry.num_usable_pages - empty - active
             ),
             "num_queue_reqs": self.scheduler.waiting_size(),
         }
