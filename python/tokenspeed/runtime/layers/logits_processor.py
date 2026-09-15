@@ -23,8 +23,6 @@
 import dataclasses
 
 import torch
-import triton
-import triton.language as tl
 from tokenspeed_kernel.ops.communication.triton import all_gather_inner, create_state
 from tokenspeed_kernel.ops.sampling import argmax as sampling_argmax
 from tokenspeed_kernel.ops.sampling.cute_dsl import (
@@ -61,6 +59,7 @@ from tokenspeed.runtime.sampling.logits_layout import (
     LogitsLayoutPlan,
 )
 from tokenspeed.runtime.utils import get_colorful_logger
+from tokenspeed.runtime.utils.triton import tl, triton
 
 logger = get_colorful_logger(__name__)
 
