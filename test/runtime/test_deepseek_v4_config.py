@@ -2122,7 +2122,7 @@ class TestDeepseekV4Config(unittest.TestCase):
             output.copy_(input_.repeat(4))
 
         with patch(
-            "tokenspeed.runtime.models.deepseek_v4_dspark_ops.heads.all_gather_into_tensor",
+            "tokenspeed.runtime.models.deepseek_v4_dspark_ops.heads.all_gather_single",
             side_effect=fake_all_gather,
         ) as gather:
             token_ids = _local_vocab_argmax(
@@ -2159,7 +2159,7 @@ class TestDeepseekV4Config(unittest.TestCase):
         )
 
         with patch(
-            "tokenspeed.runtime.models.deepseek_v4_dspark_ops.heads.all_gather_into_tensor"
+            "tokenspeed.runtime.models.deepseek_v4_dspark_ops.heads.all_gather_single"
         ) as gather:
             token_ids = _local_vocab_argmax(
                 local_logits,
