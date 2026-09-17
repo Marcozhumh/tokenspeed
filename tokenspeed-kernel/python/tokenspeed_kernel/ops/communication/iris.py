@@ -964,13 +964,9 @@ class IrisAllReduce(object):
             if self._producer_direct_scratch_numel
             else None
         )
-        output_max_numel = max(
-            producer_direct_max_numel,
-            staged_max_numel if self._staged_two_stage_supported else 0,
-        )
         self._reduced_output_buf = (
-            torch.empty(output_max_numel, dtype=dtype, device=self.device)
-            if output_max_numel
+            torch.empty(producer_direct_max_numel, dtype=dtype, device=self.device)
+            if producer_direct_max_numel
             else None
         )
         self._ready_flags = (
@@ -1229,6 +1225,9 @@ class IrisAllReduce(object):
     ) -> torch.Tensor:
         """Reduce ``tensor`` in place via reduce-scatter then all-gather.
 
+        Unaligned destinations use a temporary and copy-back so every rank
+        keeps the same collective protocol while the kernel uses packed stores.
+
         Args:
             tensor: Contiguous local contribution; overwritten with the sum.
             numel: ``tensor.numel()``, already checked against the heap capacity.
@@ -1251,8 +1250,10 @@ class IrisAllReduce(object):
         )
         num_tiles = triton.cdiv(partition_words, block_words)
         num_programs = min(num_tiles, kernel_config.max_programs)
-        assert self._reduced_output_buf is not None
-        output = self._reduced_output_buf[:numel]
+        output = tensor.view(-1)
+        copy_output = output.data_ptr() % self._kernel_config.packed_word_bytes != 0
+        if copy_output:
+            output = torch.empty_like(output)
         iris_reduce_symmetric_two_stage_gluon_kernel[(num_programs,)](
             staged,
             self._staged_two_stage_scratch_buf,
@@ -1273,7 +1274,8 @@ class IrisAllReduce(object):
             EXIT_BARRIER=True,
             num_warps=kernel_config.num_subgroups,
         )
-        tensor.view(-1).copy_(output)
+        if copy_output:
+            tensor.view(-1).copy_(output)
         return tensor.clone() if safe else tensor
 
     def all_reduce_symmetric(
