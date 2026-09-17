@@ -20,8 +20,11 @@
 
 """DeepSeek V4 attention kernels for AMD GFX1250."""
 
+from tokenspeed_kernel_amd.ops.gfx1250.attention.dsv4.decode import (
+    gluon_dsv4_decode_gfx1250,
+)
 from tokenspeed_kernel_amd.ops.gfx1250.attention.dsv4.prefill import (
     gluon_dsv4_prefill_gfx1250,
 )
 
-__all__ = ["gluon_dsv4_prefill_gfx1250"]
+__all__ = ["gluon_dsv4_decode_gfx1250", "gluon_dsv4_prefill_gfx1250"]
