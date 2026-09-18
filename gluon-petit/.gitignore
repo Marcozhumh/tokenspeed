@@ -1,0 +1,6 @@
+# This source tree mirrors native Petit, including its lib directory.
+!lib/
+!lib/**
+__pycache__/
+.pytest_cache/
+artifacts/
