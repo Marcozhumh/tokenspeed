@@ -1818,6 +1818,18 @@ class KimiLinearMoE(nn.Module):
         )
         return router_logits, routed_input, shared_output
 
+    def process_weights_after_loading(self, module) -> None:
+        """Configure the latent projection from the processed expert input scale."""
+        if (
+            self.experts.plan["weight_dtype"] == "nvfp4"
+            and self.experts.plan["solution"] == "flashinfer_trtllm"
+        ):
+            # The loader visits this parent before its expert child.
+            self.experts.process_weights_after_loading(self.experts)
+            self.routed_expert_down_proj.prepare_nvfp4_output(
+                self.experts.w13_input_scale_quant
+            )
+
     def _routed_experts(
         self,
         routed_in: torch.Tensor | tuple[torch.Tensor, torch.Tensor],
