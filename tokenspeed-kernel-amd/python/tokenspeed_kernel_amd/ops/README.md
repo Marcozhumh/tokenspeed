@@ -37,16 +37,22 @@ regress perf even when the generated kernel remains correct.
 
 ### DeepSeek V4 attention
 
-The gfx950 package provides MXFP4 index selection, dense-workspace selected
-prefill, and page-planar selected decode. Gfx1250 provides page-planar selected
-decode. Decode reads a sliding-window (SWA) cache and an optional compressed
-cache; both segments share one softmax, and the attention sink is applied once.
+The gfx950 and gfx1250 packages provide MXFP4 index selection. Gfx950 also
+provides dense-workspace selected prefill, while both architectures provide
+page-planar selected decode. Decode reads a sliding-window (SWA) cache and an
+optional compressed cache; both segments share one softmax, and the attention
+sink is applied once.
 
 #### Contract
 
 - The gfx950 MXFP4 indexers support 32 or 64 index heads of dimension 128,
   64-row pages, and top-k 512, 1024, or 2048. Prefill and decode return int32
   logical offsets; `dsv4_plan` preserves graph-stable sequence metadata.
+- The gfx1250 MXFP4 indexers implement the same logical contract for packed
+  E2M1 values with one E8M0 scale per 32 elements. They accept padded page and
+  block-table strides, reject invalid physical pages, and support caller-owned
+  outputs and graph replay. Each page stores its packed key rows followed by
+  the corresponding scale rows.
 - The gfx950 prefill kernel accepts contiguous BF16 queries shaped
   `(tokens, heads, 512)`, a dense BF16 KV workspace, contiguous int32 selected
   indices and lengths, and a contiguous BF16 or FP32 sink. Registered selected
@@ -77,6 +83,16 @@ buffer-to-LDS copies and double-buffered KV tiles; 64- and 128-head cases use a
 uses 16-head by 32-row tiles, four wave64s, and 18 fixed KV partitions. Its
 second kernel combines the partial outputs and log-sum-exp values before
 applying the sink.
+
+The gfx1250 indexer scores 64 candidates at a time with native scaled E2M1
+wave32 WMMA, accumulates weighted ReLU scores in FP32, and reuses the gfx1250
+DSA radix top-k. Four waves cover 32 index heads; 64-head inputs reuse the same
+key tile for a second WMMA group. Prefill and smaller decode workloads use
+vectorized CDNA5 buffer loads. Larger decode workloads stage page-planar keys
+and scales through native TDM into padded LDS. Double buffering and a
+one-page-ahead software pipeline overlap these transfers with WMMA scoring
+while keeping the transfer geometry aligned and the number of nearby TDM
+operations bounded.
 
 On gfx1250, decode fuses page-planar dequantization, BF16 wave32 WMMA attention,
 FP32 online softmax, and output reduction. A workgroup covers 32 or 64 query
