@@ -1741,6 +1741,71 @@ def _pack_index_queries(X, V, S, X0, X1):
     tl.store(S + row, word.to(tl.int32))
 
 
+@triton.jit
+def _quantize_index_queries_kernel(
+    Q,
+    W,
+    QOut,
+    WOut,
+    Q0,
+    Q1,
+    Q2,
+    W0,
+    W1,
+    O0,
+    O1,
+    F0,
+    F1,
+    D: tl.constexpr,
+):
+    row = tl.program_id(0).to(tl.int64)
+    head = tl.program_id(1).to(tl.int64)
+    d = tl.arange(0, D)
+    value = tl.load(Q + row * Q0 + head * Q1 + d * Q2).to(tl.float32)
+    # PyTorch divides a tensor by a Python scalar as a multiply by its
+    # reciprocal, so the reference scale is amax * (1 / 448), not amax / 448.
+    scale = tl.maximum(tl.max(tl.abs(value), axis=0), 1.0e-6) * (1.0 / 448.0)
+    quantized = tl.minimum(tl.maximum(tl.div_rn(value, scale), -448.0), 448.0)
+    tl.store(QOut + row * O0 + head * O1 + d, quantized.to(tl.float8e4nv))
+    weight = tl.load(W + row * W0 + head * W1).to(tl.float32)
+    tl.store(WOut + row * F0 + head * F1, weight * scale)
+
+
+def quantize_index_queries(index_q, weights):
+    """Quantize index queries to E4M3 and fold their scale into the weights.
+
+    Args:
+        index_q: BF16 [tokens, heads, 128] post-RoPE queries.
+        weights: [tokens, heads] per-head score weights.
+
+    Returns:
+        (E4M3 [tokens, heads, 128], FP32 [tokens, heads]) -- the scale rides in
+        the returned weights because DeepGEMM's FP8 logits kernels take no
+        query scale of their own. Quantization mirrors the ``index_v4`` cache
+        codec so queries and keys are quantized the same way.
+    """
+    tokens, heads, dim = index_q.shape
+    quantized = torch.empty(
+        (tokens, heads, dim), dtype=torch.float8_e4m3fn, device=index_q.device
+    )
+    folded = torch.empty((tokens, heads), dtype=torch.float32, device=index_q.device)
+    if tokens:
+        _quantize_index_queries_kernel[(tokens, heads)](
+            index_q,
+            weights,
+            quantized,
+            folded,
+            *index_q.stride(),
+            *weights.stride(),
+            *quantized.stride()[:2],
+            *folded.stride(),
+            D=dim,
+            num_warps=4,
+            enable_fp_fusion=False,
+        )
+    return quantized, folded
+
+
 def pack_index_queries(values):
     flat = values.reshape(-1, 128)
     data = torch.empty(
