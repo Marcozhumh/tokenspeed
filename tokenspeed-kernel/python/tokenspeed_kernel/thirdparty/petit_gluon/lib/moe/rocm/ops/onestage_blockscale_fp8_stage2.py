@@ -23,16 +23,15 @@
 """Native pipelined down projection and packed BF16 atomic output."""
 
 import triton.experimental.gluon as g
-from triton.experimental.gluon import language as l
-
-from tokenspeed_kernel.thirdparty.petit_gluon.lib.gemm.rocm.amd_intrinsics import (
+from lib.gemm.rocm.amd_intrinsics import (
     _pack_float2,
     _unpack_float2,
     amdgcn_perm_b32,
     amdgcn_pk_mul_f32,
 )
-from tokenspeed_kernel.thirdparty.petit_gluon.lib.moe.rocm.fused_moe import ClearMat, HotLoopScheduler
-from tokenspeed_kernel.thirdparty.petit_gluon.lib.tal.tensor.layout import Layout, Shape, Stride, make_coord
+from lib.moe.rocm.fused_moe import ClearMat, HotLoopScheduler
+from lib.tal.tensor.layout import Layout, Shape, Stride, make_coord
+from triton.experimental.gluon import language as l
 
 
 @g.jit

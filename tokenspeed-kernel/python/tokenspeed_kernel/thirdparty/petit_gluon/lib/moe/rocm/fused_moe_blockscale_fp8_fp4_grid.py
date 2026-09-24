@@ -25,34 +25,33 @@
 from typing import NamedTuple
 
 import triton.experimental.gluon as g
-from triton.experimental.gluon import language as l
-
-from tokenspeed_kernel.thirdparty.petit_gluon.lib.gemm.rocm.amd_intrinsics import (
+from lib.gemm.rocm.amd_intrinsics import (
     amdgcn_ds_bpermute,
     amdgcn_pk_fma_f32,
     kWarpSize,
     mma_m16n16k32_bf8_fp8_f32,
 )
-from tokenspeed_kernel.thirdparty.petit_gluon.lib.gemm.rocm.quantization.dequant import Fp4ToBf8
-from tokenspeed_kernel.thirdparty.petit_gluon.lib.moe.rocm.memory_ops import (
+from lib.gemm.rocm.quantization.dequant import Fp4ToBf8
+from lib.moe.rocm.memory_ops import (
     InputLayout,
     MxFp4WeightLayout,
     _uninitialized_like,
     _uninitialized_uint4_array,
 )
-from tokenspeed_kernel.thirdparty.petit_gluon.lib.moe.rocm.ops.onestage_blockscale_fp8_stage1 import (
+from lib.moe.rocm.ops.onestage_blockscale_fp8_stage1 import (
     FusedMoEBlockScaleFP8Stage1SingleBufferOp,
 )
-from tokenspeed_kernel.thirdparty.petit_gluon.lib.moe.rocm.ops.onestage_blockscale_fp8_stage2 import (
+from lib.moe.rocm.ops.onestage_blockscale_fp8_stage2 import (
     FusedMoEBlockScaleFP8Stage2Op,
 )
-from tokenspeed_kernel.thirdparty.petit_gluon.lib.moe.rocm.ops.onestage_blockscale_quantization import QuantizeAndShuffleFp8
-from tokenspeed_kernel.thirdparty.petit_gluon.lib.moe.rocm.ops.onestage_fused_moe_blockscale_fp8 import (
+from lib.moe.rocm.ops.onestage_blockscale_quantization import QuantizeAndShuffleFp8
+from lib.moe.rocm.ops.onestage_fused_moe_blockscale_fp8 import (
     LaunchOnestageFusedMoEBlockScaleFP8,
     OnestageFusedMoEBlockScaleFP8,
 )
-from tokenspeed_kernel.thirdparty.petit_gluon.lib.moe.rocm.warp_schedule import WarpSchedule
-from tokenspeed_kernel.thirdparty.petit_gluon.lib.tal.tensor.layout import Layout, Shape, Stride
+from lib.moe.rocm.warp_schedule import WarpSchedule
+from lib.tal.tensor.layout import Layout, Shape, Stride
+from triton.experimental.gluon import language as l
 
 
 @g.jit

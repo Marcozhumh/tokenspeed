@@ -21,7 +21,7 @@
 # SOFTWARE.
 
 import triton.experimental.gluon as g
-from tokenspeed_kernel.thirdparty.petit_gluon.lib.gemm.rocm.amd_intrinsics import (
+from lib.gemm.rocm.amd_intrinsics import (
     _amdgcn_dequant_library,
     amdgcn_perm_b32,
     amdgcn_pk_mul_f32,

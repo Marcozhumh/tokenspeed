@@ -23,9 +23,9 @@
 """Native MoE quantization helpers, including the standalone online routines."""
 
 import triton.experimental.gluon as g
-from tokenspeed_kernel.thirdparty.petit_gluon.lib.gemm.rocm.amd_intrinsics import amdgcn_cvt_pk_fp8_f32, amdgcn_rcpf
-from triton.experimental.gluon import language as l
 import triton.language as tl
+from lib.gemm.rocm.amd_intrinsics import amdgcn_cvt_pk_fp8_f32, amdgcn_rcpf
+from triton.experimental.gluon import language as l
 
 kQuantBlockK = l.constexpr(128)
 kFp8E4m3Max = l.constexpr(448.0)
@@ -98,7 +98,11 @@ def OnlineQuantize2x128(
 
 
 from typing import NamedTuple
-from tokenspeed_kernel.thirdparty.petit_gluon.lib.gemm.rocm.amd_intrinsics import amdgcn_cvt_scalef32_pk_fp4_f32, amdgcn_pk_mul_f32
+
+from lib.gemm.rocm.amd_intrinsics import (
+    amdgcn_cvt_scalef32_pk_fp4_f32,
+    amdgcn_pk_mul_f32,
+)
 
 
 class MxFp4Scale(NamedTuple):
@@ -120,18 +124,24 @@ class NativeMxFp4Quantization:
 
     @g.jit
     def MaximumAbs(value):
-        return l.maximum(l.maximum(l.abs(value[0]), l.abs(value[1])),
-                         l.maximum(l.abs(value[2]), l.abs(value[3])))
+        return l.maximum(
+            l.maximum(l.abs(value[0]), l.abs(value[1])),
+            l.maximum(l.abs(value[2]), l.abs(value[3])),
+        )
 
     @g.jit
     def EncodeScale(max_abs):
         required = max_abs * (1.0 / 6.0)
         required_bits = required.to(l.uint32, bitcast=True)
-        scale_byte = (required_bits >> 23) & 0xff
-        scale_byte += ((scale_byte < 0xff) & ((required_bits & 0x7fffff) != 0)).to(l.uint32)
+        scale_byte = (required_bits >> 23) & 0xFF
+        scale_byte += ((scale_byte < 0xFF) & ((required_bits & 0x7FFFFF) != 0)).to(
+            l.uint32
+        )
         bits = scale_byte << 23
-        return MxFp4Scale(l.where(max_abs < 1.e-12, 127, scale_byte),
-                          l.where(max_abs < 1.e-12, 1.0, bits.to(l.float32, bitcast=True)))
+        return MxFp4Scale(
+            l.where(max_abs < 1.0e-12, 127, scale_byte),
+            l.where(max_abs < 1.0e-12, 1.0, bits.to(l.float32, bitcast=True)),
+        )
 
     @g.jit
     def Pack(values, scale, kVectors: l.constexpr):
@@ -141,9 +151,15 @@ class NativeMxFp4Quantization:
         for vector in l.static_range(0, kVectors, 2):
             a, b = values[vector], values[vector + 1]
             word = amdgcn_cvt_scalef32_pk_fp4_f32(0, a[0], a[1], scale.packing_scale, 0)
-            word = amdgcn_cvt_scalef32_pk_fp4_f32(word, a[2], a[3], scale.packing_scale, 1)
-            word = amdgcn_cvt_scalef32_pk_fp4_f32(word, b[0], b[1], scale.packing_scale, 2)
-            word = amdgcn_cvt_scalef32_pk_fp4_f32(word, b[2], b[3], scale.packing_scale, 3)
+            word = amdgcn_cvt_scalef32_pk_fp4_f32(
+                word, a[2], a[3], scale.packing_scale, 1
+            )
+            word = amdgcn_cvt_scalef32_pk_fp4_f32(
+                word, b[0], b[1], scale.packing_scale, 2
+            )
+            word = amdgcn_cvt_scalef32_pk_fp4_f32(
+                word, b[2], b[3], scale.packing_scale, 3
+            )
             packed += (word,)
         return packed
 
@@ -153,14 +169,20 @@ class AiterMxFp4Quantization:
 
     @g.jit
     def MaximumAbs(value):
-        return l.maximum(l.maximum(l.abs(value[0]), l.abs(value[1]), propagate_nan=tl.PropagateNan.ALL),
-                         l.maximum(l.abs(value[2]), l.abs(value[3]), propagate_nan=tl.PropagateNan.ALL),
-                         propagate_nan=tl.PropagateNan.ALL)
+        return l.maximum(
+            l.maximum(
+                l.abs(value[0]), l.abs(value[1]), propagate_nan=tl.PropagateNan.ALL
+            ),
+            l.maximum(
+                l.abs(value[2]), l.abs(value[3]), propagate_nan=tl.PropagateNan.ALL
+            ),
+            propagate_nan=tl.PropagateNan.ALL,
+        )
 
     @g.jit
     def EncodeScale(max_abs):
         bits = max_abs.to(l.uint32, bitcast=True)
-        bits = (bits + 0x00400000) & 0xff800000
+        bits = (bits + 0x00400000) & 0xFF800000
         exponent = l.maximum(bits >> 23, 2)
         scale_byte = exponent - 2
         scale_bits = scale_byte << 23
@@ -171,8 +193,12 @@ class AiterMxFp4Quantization:
         packed = ()
         for vector in l.static_range(kVectors):
             value = values[vector]
-            word = amdgcn_cvt_scalef32_pk_fp4_f32(0, value[0], value[1], scale.packing_scale, 0)
-            word = amdgcn_cvt_scalef32_pk_fp4_f32(word, value[2], value[3], scale.packing_scale, 1)
+            word = amdgcn_cvt_scalef32_pk_fp4_f32(
+                0, value[0], value[1], scale.packing_scale, 0
+            )
+            word = amdgcn_cvt_scalef32_pk_fp4_f32(
+                word, value[2], value[3], scale.packing_scale, 1
+            )
             packed += (word.to(l.uint16),)
         return packed
 

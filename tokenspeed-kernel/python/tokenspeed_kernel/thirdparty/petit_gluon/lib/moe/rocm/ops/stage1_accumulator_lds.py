@@ -1,11 +1,14 @@
 """Native accumulator-to-LDS layouts; pointers index scalar float words."""
+
 import triton.experimental.gluon as g
+from lib.moe.rocm.memory_ops import _store_vector4
 from triton.experimental.gluon import language as l
-from tokenspeed_kernel.thirdparty.petit_gluon.lib.moe.rocm.memory_ops import _store_vector4
 
 
 @g.jit
-def StoreStage1AccumulatorLds(shm, h, wid, wtid, kNumWarps: l.constexpr, kGroupN: l.constexpr):
+def StoreStage1AccumulatorLds(
+    shm, h, wid, wtid, kNumWarps: l.constexpr, kGroupN: l.constexpr
+):
     l.static_assert(kGroupN % kNumWarps == 0, "invalid accumulator layout")
     kInputFragments: l.constexpr = (32 * kGroupN) // (kNumWarps * 64) // 4
     kColsPerWarp: l.constexpr = kGroupN // kNumWarps
@@ -18,8 +21,16 @@ def StoreStage1AccumulatorLds(shm, h, wid, wtid, kNumWarps: l.constexpr, kGroupN
 
 
 @g.jit
-def StoreStage1AccumulatorLds2D(shm, h, wid, wtid, kGroupM: l.constexpr, kGroupN: l.constexpr,
-                                kWarpsM: l.constexpr, kWarpsN: l.constexpr):
+def StoreStage1AccumulatorLds2D(
+    shm,
+    h,
+    wid,
+    wtid,
+    kGroupM: l.constexpr,
+    kGroupN: l.constexpr,
+    kWarpsM: l.constexpr,
+    kWarpsN: l.constexpr,
+):
     l.static_assert(kGroupM == 32 * kWarpsM, "each M wave covers M32")
     l.static_assert(kGroupN % kWarpsN == 0, "invalid N wave partition")
     kWaveN: l.constexpr = kGroupN // kWarpsN
@@ -35,7 +46,9 @@ def StoreStage1AccumulatorLds2D(shm, h, wid, wtid, kGroupM: l.constexpr, kGroupN
 
 
 @g.jit
-def StoreStage1AccumulatorLdsM64(shm, h, wid, wtid, kGroupN: l.constexpr, kNumWarps: l.constexpr):
+def StoreStage1AccumulatorLdsM64(
+    shm, h, wid, wtid, kGroupN: l.constexpr, kNumWarps: l.constexpr
+):
     l.static_assert(kGroupN == 32 * kNumWarps, "each wave owns one N32 slice")
     row_lane = wtid % 16
     col_quadrant = wtid // 16

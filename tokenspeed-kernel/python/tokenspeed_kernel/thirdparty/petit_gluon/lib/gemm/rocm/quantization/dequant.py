@@ -23,15 +23,15 @@
 import struct
 
 import triton.experimental.gluon as g
-from tokenspeed_kernel.thirdparty.petit_gluon.lib.gemm.rocm.amd_fastmath import Fp16Trait, hmul2
-from tokenspeed_kernel.thirdparty.petit_gluon.lib.gemm.rocm.amd_intrinsics import (
+from lib.gemm.rocm.amd_fastmath import Fp16Trait, hmul2
+from lib.gemm.rocm.amd_intrinsics import (
     HAS_AMD_BF8_PACK_CONVERSION,
     amdgcn_cvt_pk_f32_bf8,
     amdgcn_perm_b32,
     amdgcn_pk_mul_f32,
     bitreverse,
 )
-from tokenspeed_kernel.thirdparty.petit_gluon.lib.gemm.rocm.quantization.types import DataType
+from lib.gemm.rocm.quantization.types import DataType
 from triton.experimental.gluon import language as l
 
 kFp8ScaleBias = l.constexpr(7)

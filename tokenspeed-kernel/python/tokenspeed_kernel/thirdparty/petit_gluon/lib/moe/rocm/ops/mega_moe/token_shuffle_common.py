@@ -1,9 +1,10 @@
 """Routing-counter initialization and cleanup for direct push."""
+
+from lib.gemm.rocm.amd_intrinsics import BufferResource
+from lib.moe.rocm.comm.barrier import system_fence_release
+from lib.moe.rocm.mega_moe.workspace import MegaMoEWorkspace
+from lib.tal.device import DeviceTemplate, device_method
 from triton.experimental.gluon import language as l
-from tokenspeed_kernel.thirdparty.petit_gluon.lib.tal.device import DeviceTemplate, device_method
-from tokenspeed_kernel.thirdparty.petit_gluon.lib.moe.rocm.mega_moe.workspace import MegaMoEWorkspace
-from tokenspeed_kernel.thirdparty.petit_gluon.lib.gemm.rocm.amd_intrinsics import BufferResource
-from tokenspeed_kernel.thirdparty.petit_gluon.lib.moe.rocm.comm.barrier import system_fence_release
 
 
 class TokenShuffleCommon(DeviceTemplate):
@@ -16,7 +17,9 @@ class TokenShuffleCommon(DeviceTemplate):
 
     @device_method
     def ClearExpertCounts(self, expert_count, tid):
-        kIterations: l.constexpr = (self.kNumExperts + self.kThreads - 1) // self.kThreads
+        kIterations: l.constexpr = (
+            self.kNumExperts + self.kThreads - 1
+        ) // self.kThreads
         for i in l.static_range(kIterations):
             expert = tid + i * self.kThreads
             if expert < self.kNumExperts:
@@ -27,13 +30,37 @@ class TokenShuffleCommon(DeviceTemplate):
     def ResetRoutingCounters(self, workspace, sm_id, tid):
         if sm_id != 0:
             return
-        kExpertIterations: l.constexpr = (self.kNumExperts + self.kThreads - 1) // self.kThreads
+        kExpertIterations: l.constexpr = (
+            self.kNumExperts + self.kThreads - 1
+        ) // self.kThreads
         for i in l.static_range(kExpertIterations):
             expert = tid + i * self.kThreads
             if expert < self.kNumExperts:
-                BufferResource.StoreU64(workspace.br_, self.Workspace.SendCounterOffset(expert), 0, (0, 0), BufferResource.kNone)
+                BufferResource.StoreU64(
+                    workspace.br_,
+                    self.Workspace.SendCounterOffset(expert),
+                    0,
+                    (0, 0),
+                    BufferResource.kNone,
+                )
         for i in range(tid, self.kNumRanks * self.kExpertsPerRank, self.kThreads):
-            BufferResource.StoreU64(workspace.br_, self.Workspace.RecvCounterOffset(workspace.rank_id_, i // self.kExpertsPerRank, i % self.kExpertsPerRank), 0, (0, 0), BufferResource.kAtomicScopeSystem)
+            BufferResource.StoreU64(
+                workspace.br_,
+                self.Workspace.RecvCounterOffset(
+                    workspace.rank_id_,
+                    i // self.kExpertsPerRank,
+                    i % self.kExpertsPerRank,
+                ),
+                0,
+                (0, 0),
+                BufferResource.kAtomicScopeSystem,
+            )
         for local_expert in range(tid, self.kExpertsPerRank, self.kThreads):
-            BufferResource.StoreU64(workspace.br_, self.Workspace.RecvSumCounterOffset(local_expert), 0, (0, 0), BufferResource.kAtomicScopeSystem)
+            BufferResource.StoreU64(
+                workspace.br_,
+                self.Workspace.RecvSumCounterOffset(local_expert),
+                0,
+                (0, 0),
+                BufferResource.kAtomicScopeSystem,
+            )
         system_fence_release()

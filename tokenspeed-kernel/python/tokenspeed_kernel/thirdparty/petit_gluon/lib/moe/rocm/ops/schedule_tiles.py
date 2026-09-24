@@ -1,10 +1,12 @@
 """Native tile-level load and MFMA schedules."""
+
 from typing import NamedTuple
+
+from lib.moe.rocm.memory_ops import TargetWeightLoadPolicy
+from lib.moe.rocm.ops.mxfp4_activation import MxFp4InputRegs
+from lib.moe.rocm.ops.schedule_matmul import NativeMxFp4Matmul
+from lib.tal.device import DeviceTemplate, device_method
 from triton.experimental.gluon import language as l
-from tokenspeed_kernel.thirdparty.petit_gluon.lib.tal.device import DeviceTemplate, device_method
-from tokenspeed_kernel.thirdparty.petit_gluon.lib.moe.rocm.memory_ops import TargetWeightLoadPolicy
-from tokenspeed_kernel.thirdparty.petit_gluon.lib.moe.rocm.ops.schedule_matmul import NativeMxFp4Matmul
-from tokenspeed_kernel.thirdparty.petit_gluon.lib.moe.rocm.ops.mxfp4_activation import MxFp4InputRegs
 
 
 class MxFp4Tile(NamedTuple):
@@ -32,7 +34,9 @@ class NativeMxFp4TileOps(DeviceTemplate):
         self.kAccumFragments = self.MatmulOp.kAccumFragments
         self.kOutputPacksPerToken = Config.kGroupN // 128
         self.kStage2BiasUsesTileK = False
-        self.kWeightLoadAux = getattr(Config, 'kWeightLoadAux', TargetWeightLoadPolicy.kAux)
+        self.kWeightLoadAux = getattr(
+            Config, "kWeightLoadAux", TargetWeightLoadPolicy.kAux
+        )
         assert self.kKStages == 2
         # Stage2 uses its own consumer rather than Config.Input.
         assert Weight.kLoadGlobal == self.MatmulOp.kWeightFragments
@@ -49,7 +53,9 @@ class NativeMxFp4TileOps(DeviceTemplate):
         scale = ()
         if self.Weight.kWaveTileM == 64:
             for m32 in l.static_range(self.kScaleFragments):
-                scale += (self.Input.FetchScaleToReg(input_state, shm.scale, wtid, m32),)
+                scale += (
+                    self.Input.FetchScaleToReg(input_state, shm.scale, wtid, m32),
+                )
         else:
             scale = (self.Input.FetchScaleToReg(input_state, shm.scale, wtid),)
         input_state = self.Input.AdvanceScaleStep(input_state)
@@ -66,8 +72,12 @@ class NativeMxFp4TileOps(DeviceTemplate):
 
     @device_method
     def LoadProjection(self, weight, tid, wid, wtid, value_offset, scale_offset):
-        v0 = self.Weight.LoadTile(weight, 0, wid, wtid, value_offset, self.kWeightLoadAux)
-        v1 = self.Weight.LoadTile(weight, 1, wid, wtid, value_offset, self.kWeightLoadAux)
+        v0 = self.Weight.LoadTile(
+            weight, 0, wid, wtid, value_offset, self.kWeightLoadAux
+        )
+        v1 = self.Weight.LoadTile(
+            weight, 1, wid, wtid, value_offset, self.kWeightLoadAux
+        )
         scale = ()
         for n32_pair in l.static_range(self.Weight.kLoadGlobal // 2):
             scale += (self.Weight.LoadScale(weight, wid, wtid, n32_pair, scale_offset),)
@@ -75,4 +85,6 @@ class NativeMxFp4TileOps(DeviceTemplate):
 
     @device_method
     def Matmul(self, t, tile, input_regs, wtid):
-        return self.MatmulOp.Matmul(t, tile.value, input_regs.x, input_regs.scale, tile.scale)
+        return self.MatmulOp.Matmul(
+            t, tile.value, input_regs.x, input_regs.scale, tile.scale
+        )

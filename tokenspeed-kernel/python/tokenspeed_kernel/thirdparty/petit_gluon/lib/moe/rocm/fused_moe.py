@@ -22,8 +22,12 @@
 
 """Native fused MoE declarations and common device operations."""
 
+from dataclasses import dataclass, replace
+from enum import IntEnum
+from typing import ClassVar, NamedTuple
+
 import triton.experimental.gluon as g
-from tokenspeed_kernel.thirdparty.petit_gluon.lib.gemm.rocm.amd_intrinsics import (
+from lib.gemm.rocm.amd_intrinsics import (
     HAS_AMD_SCHED_BARRIER,
     HAS_AMD_SCHED_GROUP_BARRIER,
     _pack_float2,
@@ -37,10 +41,6 @@ from tokenspeed_kernel.thirdparty.petit_gluon.lib.gemm.rocm.amd_intrinsics impor
 )
 from triton.experimental.gluon import language as l
 
-
-from dataclasses import dataclass, replace
-from enum import IntEnum
-from typing import ClassVar, NamedTuple
 
 class FusedMoEDataType(IntEnum):
     kNone = 0
@@ -121,7 +121,7 @@ class FusedMoESolutionId:
     weight_load_policy: FusedMoEWeightLoadPolicy = FusedMoEWeightLoadPolicy.kCached
     padding: int = 0
     kShapeAlignment: ClassVar[int] = 64
-    kMaxShapeDiv64: ClassVar[int] = 0xff
+    kMaxShapeDiv64: ClassVar[int] = 0xFF
 
     def Dim(self):
         return self.dim_div64 * self.kShapeAlignment
@@ -131,11 +131,19 @@ class FusedMoESolutionId:
 
     @staticmethod
     def IsShapeEncodable(dim, inter_dim):
-        return (dim != 0 and inter_dim != 0 and dim % 64 == 0 and inter_dim % 64 == 0
-                and dim // 64 <= 0xff and inter_dim // 64 <= 0xff)
+        return (
+            dim != 0
+            and inter_dim != 0
+            and dim % 64 == 0
+            and inter_dim % 64 == 0
+            and dim // 64 <= 0xFF
+            and inter_dim // 64 <= 0xFF
+        )
 
     def WithShape(self, dim, inter_dim):
-        return replace(self, dim_div64=(dim // 64) & 0xff, inter_dim_div64=(inter_dim // 64) & 0xff)
+        return replace(
+            self, dim_div64=(dim // 64) & 0xFF, inter_dim_div64=(inter_dim // 64) & 0xFF
+        )
 
     def WithWeightLoadPolicy(self, policy):
         return replace(self, weight_load_policy=policy)
@@ -150,13 +158,13 @@ class FusedMoESolutionId:
         return ((self.Repr() >> 30) & 15) | (((self.Repr() >> 51) & 1) << 4)
 
     def HiddenSizeDiv64(self):
-        return (self.Repr() >> 34) & 0xff
+        return (self.Repr() >> 34) & 0xFF
 
     def W2TileShape(self):
         return MegaMoETileShape((self.Repr() >> 42) & 1)
 
     def MegaInterDimDiv64(self):
-        return (((self.Repr() >> 43) & 0x1f) + 1) * 8
+        return (((self.Repr() >> 43) & 0x1F) + 1) * 8
 
     def ProducerGeometry(self):
         return MegaMoEProducerGeometry((self.Repr() >> 48) & 3)
@@ -177,52 +185,134 @@ class FusedMoESolutionId:
         kMask = 1 << 41
         return self.FromRepr((self.Repr() & ~kMask) | (int(shape) << 41))
 
-    def WithMegaMoEConfig(self, num_ranks, experts, num_topk, hidden_size, inter_dim,
-                         producer_geometry, w2_tile_shape=MegaMoETileShape.kN256):
+    def WithMegaMoEConfig(
+        self,
+        num_ranks,
+        experts,
+        num_topk,
+        hidden_size,
+        inter_dim,
+        producer_geometry,
+        w2_tile_shape=MegaMoETileShape.kN256,
+    ):
         rank_log2 = 0
         while num_ranks > 1:
             rank_log2 += 1
             num_ranks >>= 1
         return self.FromRepr(
-            (self.Repr() & 0x00ffffff) | (rank_log2 << 24)
-            | (((experts // 32 - 1) & 15) << 26) | ((experts // 32 - 1) >> 4 << 50)
-            | ((num_topk & 15) << 30) | (num_topk >> 4 << 51)
-            | (hidden_size // 64 << 34) | (int(w2_tile_shape) << 42)
-            | (inter_dim // 512 - 1 << 43) | (int(producer_geometry) << 48))
+            (self.Repr() & 0x00FFFFFF)
+            | (rank_log2 << 24)
+            | (((experts // 32 - 1) & 15) << 26)
+            | ((experts // 32 - 1) >> 4 << 50)
+            | ((num_topk & 15) << 30)
+            | (num_topk >> 4 << 51)
+            | (hidden_size // 64 << 34)
+            | (int(w2_tile_shape) << 42)
+            | (inter_dim // 512 - 1 << 43)
+            | (int(producer_geometry) << 48)
+        )
 
     def Repr(self):
-        return (int(self.act_dtype) | (int(self.weight_dtype) << 4) | (int(self.bias_dtype) << 8)
-                | (int(self.weight_ordering) << 12) | (int(self.mfma) << 14)
-                | (int(self.stages) << 16) | (int(self.activation) << 20)
-                | (int(self.stage1_buffering) << 23) | (self.dim_div64 << 24)
-                | (self.inter_dim_div64 << 32) | (int(self.weight_load_policy) << 40)
-                | (self.padding << 41))
+        return (
+            int(self.act_dtype)
+            | (int(self.weight_dtype) << 4)
+            | (int(self.bias_dtype) << 8)
+            | (int(self.weight_ordering) << 12)
+            | (int(self.mfma) << 14)
+            | (int(self.stages) << 16)
+            | (int(self.activation) << 20)
+            | (int(self.stage1_buffering) << 23)
+            | (self.dim_div64 << 24)
+            | (self.inter_dim_div64 << 32)
+            | (int(self.weight_load_policy) << 40)
+            | (self.padding << 41)
+        )
 
     @staticmethod
     def FromRepr(repr):
         # Keep raw enum integers: C++ FromRepr also accepts unknown enum values.
-        return FusedMoESolutionId(repr & 15, repr >> 4 & 15, repr >> 8 & 15,
-            repr >> 12 & 3, repr >> 14 & 3, repr >> 16 & 15, repr >> 20 & 7,
-            repr >> 23 & 1, repr >> 24 & 255, repr >> 32 & 255, repr >> 40 & 1,
-            repr >> 41 & 0x7fffff)
+        return FusedMoESolutionId(
+            repr & 15,
+            repr >> 4 & 15,
+            repr >> 8 & 15,
+            repr >> 12 & 3,
+            repr >> 14 & 3,
+            repr >> 16 & 15,
+            repr >> 20 & 7,
+            repr >> 23 & 1,
+            repr >> 24 & 255,
+            repr >> 32 & 255,
+            repr >> 40 & 1,
+            repr >> 41 & 0x7FFFFF,
+        )
 
     @staticmethod
-    def MakeBase(act_dtype, weight_dtype, bias_dtype, weight_ordering, mfma, stages,
-                 activation, stage1_buffering):
-        return FusedMoESolutionId(act_dtype, weight_dtype, bias_dtype, weight_ordering,
-                                  mfma, stages, activation, stage1_buffering)
+    def MakeBase(
+        act_dtype,
+        weight_dtype,
+        bias_dtype,
+        weight_ordering,
+        mfma,
+        stages,
+        activation,
+        stage1_buffering,
+    ):
+        return FusedMoESolutionId(
+            act_dtype,
+            weight_dtype,
+            bias_dtype,
+            weight_ordering,
+            mfma,
+            stages,
+            activation,
+            stage1_buffering,
+        )
 
     @staticmethod
-    def MakeMegaBase(act_dtype, weight_dtype, bias_dtype, weight_ordering, mfma, stages,
-                     activation, stage1_buffering):
-        return FusedMoESolutionId.MakeBase(act_dtype, weight_dtype, bias_dtype,
-            weight_ordering, mfma, stages, activation, stage1_buffering)
+    def MakeMegaBase(
+        act_dtype,
+        weight_dtype,
+        bias_dtype,
+        weight_ordering,
+        mfma,
+        stages,
+        activation,
+        stage1_buffering,
+    ):
+        return FusedMoESolutionId.MakeBase(
+            act_dtype,
+            weight_dtype,
+            bias_dtype,
+            weight_ordering,
+            mfma,
+            stages,
+            activation,
+            stage1_buffering,
+        )
 
     @staticmethod
-    def Make(act_dtype, weight_dtype, bias_dtype, weight_ordering, mfma, stages,
-             activation, stage1_buffering, dim, inter_dim):
-        return FusedMoESolutionId.MakeBase(act_dtype, weight_dtype, bias_dtype,
-            weight_ordering, mfma, stages, activation, stage1_buffering).WithShape(dim, inter_dim)
+    def Make(
+        act_dtype,
+        weight_dtype,
+        bias_dtype,
+        weight_ordering,
+        mfma,
+        stages,
+        activation,
+        stage1_buffering,
+        dim,
+        inter_dim,
+    ):
+        return FusedMoESolutionId.MakeBase(
+            act_dtype,
+            weight_dtype,
+            bias_dtype,
+            weight_ordering,
+            mfma,
+            stages,
+            activation,
+            stage1_buffering,
+        ).WithShape(dim, inter_dim)
 
 
 @dataclass
@@ -421,7 +511,7 @@ def FusedMoEBlockScaleFP8(
     ``num_persistent_tgs`` is the requested threadgroup budget (0 disables it).
     Return 0 on launch, 1 for invalid shape, or 2 for null required buffers.
     """
-    from tokenspeed_kernel.thirdparty.petit_gluon.lib.moe.rocm.fused_moe_blockscale_fp8_grid import (
+    from lib.moe.rocm.fused_moe_blockscale_fp8_grid import (
         FusedMoEBlockScaleFP8 as invoke,
     )
 
@@ -475,7 +565,7 @@ def FusedMoEBlockScaleFP8MXFP4Weight(
     shuffled E8M0 scale bytes, and ``num_experts`` bounds the sorted expert IDs
     (0 disables that bound). Return native status 0, 1 (shape), or 2 (argument).
     """
-    from tokenspeed_kernel.thirdparty.petit_gluon.lib.moe.rocm.fused_moe_blockscale_fp8_fp4_grid import (
+    from lib.moe.rocm.fused_moe_blockscale_fp8_fp4_grid import (
         FusedMoEBlockScaleFP8MXFP4Weight as invoke,
     )
 
@@ -509,26 +599,41 @@ from functools import cache
 
 @cache
 def _TwoStageCallMap():
-    from tokenspeed_kernel.thirdparty.petit_gluon.lib.moe.rocm.fused_moe_config_selector import (
-        ConfigSelector, kFusedMoETwoStageMxFp4BiasSolutionId,
+    from lib.moe.rocm.fused_moe_config_selector import (
+        ConfigSelector,
+        kFusedMoETwoStageMxFp4BiasSolutionId,
         kFusedMoETwoStageMxFp4SiluSolutionId,
     )
+
     calls = {}
+
     def RegisterTwoStageShape(base, dim, inter_dim, topks):
         cached = base.WithShape(dim, inter_dim)
-        non_temporal = cached.WithWeightLoadPolicy(FusedMoEWeightLoadPolicy.kNonTemporal)
+        non_temporal = cached.WithWeightLoadPolicy(
+            FusedMoEWeightLoadPolicy.kNonTemporal
+        )
         for solution in (cached, non_temporal):
-            calls[solution.Repr()] = {topk: ConfigSelector(solution, topk) for topk in topks}
+            calls[solution.Repr()] = {
+                topk: ConfigSelector(solution, topk) for topk in topks
+            }
+
     RegisterTwoStageShape(kFusedMoETwoStageMxFp4BiasSolutionId, 3072, 3072, (4,))
-    RegisterTwoStageShape(kFusedMoETwoStageMxFp4BiasSolutionId.WithStage1TileShape(
-        FusedMoEStage1TileShape.kM64N512), 3072, 3072, (4,))
+    RegisterTwoStageShape(
+        kFusedMoETwoStageMxFp4BiasSolutionId.WithStage1TileShape(
+            FusedMoEStage1TileShape.kM64N512
+        ),
+        3072,
+        3072,
+        (4,),
+    )
     RegisterTwoStageShape(kFusedMoETwoStageMxFp4SiluSolutionId, 7168, 2048, (8, 9))
     RegisterTwoStageShape(kFusedMoETwoStageMxFp4SiluSolutionId, 7168, 3072, (7,))
     return calls
 
 
 def TwoStageWorkspaceSize(Config, max_num_m_blocks, inter_dim):
-    from tokenspeed_kernel.thirdparty.petit_gluon.lib.moe.rocm.fused_moe_2stage_kernel import TwoStageFusedMoEWorkspace
+    from lib.moe.rocm.fused_moe_2stage_kernel import TwoStageFusedMoEWorkspace
+
     if inter_dim != Config.kInterDim:
         return 0
     return TwoStageFusedMoEWorkspace(Config).Bytes(max_num_m_blocks, Config.kInterDim)
@@ -536,40 +641,77 @@ def TwoStageWorkspaceSize(Config, max_num_m_blocks, inter_dim):
 
 def FusedMoE2StageWorkspaceSize(max_num_m_blocks, inter_dim, solution_id):
     configs = _TwoStageCallMap().get(solution_id)
-    return 0 if configs is None else max(TwoStageWorkspaceSize(c, max_num_m_blocks, inter_dim)
-                                         for c in configs.values())
+    return (
+        0
+        if configs is None
+        else max(
+            TwoStageWorkspaceSize(c, max_num_m_blocks, inter_dim)
+            for c in configs.values()
+        )
+    )
 
 
 def IsGfx950(stream, device):
     import torch
-    return torch.cuda.get_device_properties(device).gcnArchName.split(':')[0] == 'gfx950'
+
+    return (
+        torch.cuda.get_device_properties(device).gcnArchName.split(":")[0] == "gfx950"
+    )
 
 
 def RequiresNativeMxFp4(solution_id):
-    return FusedMoESolutionId.FromRepr(solution_id).weight_ordering == FusedMoEWeightOrdering.kNativeMxFp4
+    return (
+        FusedMoESolutionId.FromRepr(solution_id).weight_ordering
+        == FusedMoEWeightOrdering.kNativeMxFp4
+    )
 
 
 @cache
 def _TwoStageKernels(Config):
-    from tokenspeed_kernel.thirdparty.petit_gluon.lib.moe.rocm.fused_moe_blockscale_fp8_kernel import FusedMoEStage1
-    from tokenspeed_kernel.thirdparty.petit_gluon.lib.moe.rocm.fused_moe_2stage_kernel import (TwoStageFusedMoEWorkspace,
-        MxFp4Stage1WorkspaceEpilogue, TwoStageFusedMoEStage2)
-    return (FusedMoEStage1(Config, MxFp4Stage1WorkspaceEpilogue(Config)),
-            TwoStageFusedMoEWorkspace(Config), TwoStageFusedMoEStage2(Config))
+    from lib.moe.rocm.fused_moe_2stage_kernel import (
+        MxFp4Stage1WorkspaceEpilogue,
+        TwoStageFusedMoEStage2,
+        TwoStageFusedMoEWorkspace,
+    )
+    from lib.moe.rocm.fused_moe_blockscale_fp8_kernel import FusedMoEStage1
+
+    return (
+        FusedMoEStage1(Config, MxFp4Stage1WorkspaceEpilogue(Config)),
+        TwoStageFusedMoEWorkspace(Config),
+        TwoStageFusedMoEStage2(Config),
+    )
 
 
 def InvokeTwoStage1(Config, params):
     import torch
-    from tokenspeed_kernel.thirdparty.petit_gluon.lib.streams import native_stream
-    from tokenspeed_kernel.thirdparty.petit_gluon.lib.moe.rocm.fused_moe_blockscale_fp8_kernel import FusedMoEStage1
-    from tokenspeed_kernel.thirdparty.petit_gluon.lib.moe.rocm.fused_moe_2stage_kernel import (
-        TwoStageFusedMoEWorkspace, MxFp4Stage1WorkspaceEpilogue, TwoStageFusedMoEStage1Compute,
+    from lib.moe.rocm.fused_moe_2stage_kernel import (
+        MxFp4Stage1WorkspaceEpilogue,
+        TwoStageFusedMoEStage1Compute,
+        TwoStageFusedMoEWorkspace,
     )
+    from lib.moe.rocm.fused_moe_blockscale_fp8_kernel import FusedMoEStage1
+    from lib.streams import native_stream
+
     common = params.common
-    if any(p is None for p in (common.intermediate, common.num_valid_ids, params.act, params.w13,
-                               common.sorted_token_ids, common.sorted_expert_ids, params.scales_act, params.scales_w13)):
+    if any(
+        p is None
+        for p in (
+            common.intermediate,
+            common.num_valid_ids,
+            params.act,
+            params.w13,
+            common.sorted_token_ids,
+            common.sorted_expert_ids,
+            params.scales_act,
+            params.scales_w13,
+        )
+    ):
         return kFusedMoEErrorInvalidArgument
-    if (common.topk, common.n, common.k) != (Config.kTopK, Config.kDim, Config.kInterDim):
+    if (common.topk, common.n, common.k) != (
+        Config.kTopK,
+        Config.kDim,
+        Config.kInterDim,
+    ):
         return kFusedMoEErrorInvalidArgument
     required = TwoStageWorkspaceSize(Config, common.max_num_m_blocks, common.k)
     if common.intermediate_bytes < required:
@@ -584,25 +726,59 @@ def InvokeTwoStage1(Config, params):
         route_groups = min(workers, route_groups)
     num_experts = common.num_experts if Config.kValidateExpertIds else 0
     kernel, workspace, _ = _TwoStageKernels(Config)
-    with torch.cuda.device(params.act.device), torch.cuda.stream(native_stream(common.stream, params.act.device)):
+    with torch.cuda.device(params.act.device), torch.cuda.stream(
+        native_stream(common.stream, params.act.device)
+    ):
         TwoStageFusedMoEStage1Compute[(n_tiles, route_groups)](
-            common.intermediate, params.act, params.w13, common.sorted_token_ids, common.sorted_expert_ids,
-            common.num_valid_ids, params.scales_act, params.scales_w13, common.m, num_experts,
-            common.max_num_m_blocks, params.w13_bias, kernel, workspace, persistent,
-            num_warps=Config.kNumWarps, enable_fp_fusion=False)
+            common.intermediate,
+            params.act,
+            params.w13,
+            common.sorted_token_ids,
+            common.sorted_expert_ids,
+            common.num_valid_ids,
+            params.scales_act,
+            params.scales_w13,
+            common.m,
+            num_experts,
+            common.max_num_m_blocks,
+            params.w13_bias,
+            kernel,
+            workspace,
+            persistent,
+            num_warps=Config.kNumWarps,
+            enable_fp_fusion=False,
+        )
     return 0
 
 
 def InvokeTwoStage2(Config, params):
     import torch
-    from tokenspeed_kernel.thirdparty.petit_gluon.lib.streams import native_stream
-    from tokenspeed_kernel.thirdparty.petit_gluon.lib.moe.rocm.fused_moe_2stage_kernel import TwoStageFusedMoEStage2, TwoStageFusedMoEStage2Compute
+    from lib.moe.rocm.fused_moe_2stage_kernel import (
+        TwoStageFusedMoEStage2,
+        TwoStageFusedMoEStage2Compute,
+    )
+    from lib.streams import native_stream
+
     common = params.common
-    if any(p is None for p in (common.intermediate, params.out, params.w2, common.sorted_token_ids,
-                               params.sorted_weights, common.sorted_expert_ids, common.num_valid_ids, params.scales_w2)):
+    if any(
+        p is None
+        for p in (
+            common.intermediate,
+            params.out,
+            params.w2,
+            common.sorted_token_ids,
+            params.sorted_weights,
+            common.sorted_expert_ids,
+            common.num_valid_ids,
+            params.scales_w2,
+        )
+    ):
         return kFusedMoEErrorInvalidArgument
-    if ((common.topk, common.n, common.k) != (Config.kTopK, Config.kDim, Config.kInterDim)
-            or common.n % Config.kGroupN != 0):
+    if (common.topk, common.n, common.k) != (
+        Config.kTopK,
+        Config.kDim,
+        Config.kInterDim,
+    ) or common.n % Config.kGroupN != 0:
         return kFusedMoEErrorInvalidArgument
     required = TwoStageWorkspaceSize(Config, common.max_num_m_blocks, common.k)
     if common.intermediate_bytes < required:
@@ -611,11 +787,28 @@ def InvokeTwoStage2(Config, params):
         return 0
     _, _, kernel = _TwoStageKernels(Config)
     num_experts = common.num_experts if Config.kValidateExpertIds else 0
-    with torch.cuda.device(params.out.device), torch.cuda.stream(native_stream(common.stream, params.out.device)):
-        TwoStageFusedMoEStage2Compute[(common.n // Config.kGroupN, kernel.kPersistentWorkers)](
-            params.out, common.intermediate, params.w2, common.sorted_token_ids, params.sorted_weights,
-            common.sorted_expert_ids, common.num_valid_ids, common.topk, params.scales_w2, num_experts,
-            common.max_num_m_blocks, params.w2_bias, kernel, num_warps=Config.kNumWarps, enable_fp_fusion=False)
+    with torch.cuda.device(params.out.device), torch.cuda.stream(
+        native_stream(common.stream, params.out.device)
+    ):
+        TwoStageFusedMoEStage2Compute[
+            (common.n // Config.kGroupN, kernel.kPersistentWorkers)
+        ](
+            params.out,
+            common.intermediate,
+            params.w2,
+            common.sorted_token_ids,
+            params.sorted_weights,
+            common.sorted_expert_ids,
+            common.num_valid_ids,
+            common.topk,
+            params.scales_w2,
+            num_experts,
+            common.max_num_m_blocks,
+            params.w2_bias,
+            kernel,
+            num_warps=Config.kNumWarps,
+            enable_fp_fusion=False,
+        )
     return 0
 
 
@@ -626,7 +819,11 @@ def FusedMoEMatmul2Stage1(params, solution_id):
     if RequiresNativeMxFp4(solution_id) and not IsGfx950(params.common.stream, None):
         return kFusedMoEErrorUnsupported
     config = configs.get(params.common.topk)
-    return kFusedMoEErrorInvalidArgument if config is None else InvokeTwoStage1(config, params)
+    return (
+        kFusedMoEErrorInvalidArgument
+        if config is None
+        else InvokeTwoStage1(config, params)
+    )
 
 
 def FusedMoEMatmul2Stage2(params, solution_id):
@@ -636,4 +833,8 @@ def FusedMoEMatmul2Stage2(params, solution_id):
     if RequiresNativeMxFp4(solution_id) and not IsGfx950(params.common.stream, None):
         return kFusedMoEErrorUnsupported
     config = configs.get(params.common.topk)
-    return kFusedMoEErrorInvalidArgument if config is None else InvokeTwoStage2(config, params)
+    return (
+        kFusedMoEErrorInvalidArgument
+        if config is None
+        else InvokeTwoStage2(config, params)
+    )

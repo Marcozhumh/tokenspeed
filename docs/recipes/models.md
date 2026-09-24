@@ -794,6 +794,39 @@ tokenspeed serve openai/gpt-oss-120b \
   --port 8000
 ```
 
+### Gluon Petit MegaMoE on AMD CDNA4
+
+The serialized-MXFP4 GPT-OSS 120B experts can use the fused Gluon Petit
+dispatch, expert, return, and combine path on one 8-GPU GFX950 node:
+
+```bash
+TORCH_NCCL_BLOCKING_WAIT=1 \
+HIP_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 \
+tokenspeed serve openai/gpt-oss-120b \
+  --dist-init-addr 127.0.0.1:4000 \
+  --world-size 8 \
+  --nprocs-per-node 8 \
+  --tensor-parallel-size 1 \
+  --data-parallel-size 8 \
+  --expert-parallel-size 8 \
+  --dense-tp-size 1 \
+  --moe-tp-size 1 \
+  --dtype bfloat16 \
+  --moe-backend petit_gluon \
+  --all2all-backend petit_gluon \
+  --chunked-prefill-size 1024 \
+  --max-prefill-tokens 1024 \
+  --disable-autotune \
+  --disable-kvstore
+```
+
+This path requires attention TP1, context parallelism 1, dense TP1, EP8,
+trivial expert placement, and at most 1024 prefill or decode tokens per rank.
+It uses stock Triton 3.8 for the vendored Gluon compiler contract. Blocking
+NCCL waits are required while capturing the fused collective in the model
+graph. The generic TokenSpeed autotuner is disabled because its synthetic
+distributed prefill exceeds Petit's per-rank token capacity.
+
 ## DeepSeek V4-Flash / V4-Pro
 
 DeepSeek V4 uses FP8 KV cache.
@@ -805,6 +838,31 @@ and `--tool-call-parser deepseek_v4`, and auto-sets `block_size=256` (pass
 
 The NVIDIA recipes below require
 `tokenspeed-deepgemm>=2.5.0.post20260629` and `tokenspeed-flashmla`.
+
+On an 8-GPU GFX950 node, a serialized-MXFP4 checkpoint with 384 routed
+experts, top-6 routing, hidden size 7168, and intermediate size 3072 can use
+the same Gluon Petit topology and backend flags shown above. Add the V4 KV and
+indexer options from the launch examples below. Petit executes its unchanged
+unclamped SiLU operation; if the checkpoint declares a SwiGLU clamp, TokenSpeed
+warns that the clamp is ignored. This is an explicit approximation and is
+never selected by `--moe-backend auto`.
+
+Measure the fused path directly from the repository with:
+
+```bash
+PYTHONPATH=tokenspeed-kernel/python \
+torchrun --standalone --nproc-per-node=8 \
+  tokenspeed-kernel/test/ops/moe/bench_petit_gluon_megamoe.py \
+  --profile gpt_oss_120b --tokens 1 2 4 8 16 32 64 128 256 512 1024
+
+PYTHONPATH=tokenspeed-kernel/python \
+torchrun --standalone --nproc-per-node=8 \
+  tokenspeed-kernel/test/ops/moe/bench_petit_gluon_megamoe.py \
+  --profile dsv4 --tokens 1 2 4 8 16 32 64 128 256 512 1024
+```
+
+The benchmark reports the maximum rank latency for eager execution and CUDA
+graph replay after warmup.
 
 **V4-Flash** — 4× B200 (SM100), data-parallel + expert-parallel:
 

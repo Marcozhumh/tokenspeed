@@ -23,9 +23,9 @@
 """Native double- and single-buffer up/gate projection procedures."""
 
 import triton.experimental.gluon as g
-from tokenspeed_kernel.thirdparty.petit_gluon.lib.gemm.rocm.amd_intrinsics import amdgcn_s_waitcnt_barrier
-from tokenspeed_kernel.thirdparty.petit_gluon.lib.moe.rocm.fused_moe import ClearMat, HotLoopScheduler, SiluDot
-from tokenspeed_kernel.thirdparty.petit_gluon.lib.moe.rocm.memory_ops import (
+from lib.gemm.rocm.amd_intrinsics import amdgcn_s_waitcnt_barrier
+from lib.moe.rocm.fused_moe import ClearMat, HotLoopScheduler, SiluDot
+from lib.moe.rocm.memory_ops import (
     InputLayout,
     _uninitialized_like,
     _uninitialized_uint4_array,

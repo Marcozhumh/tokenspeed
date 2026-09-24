@@ -1,14 +1,21 @@
 """Native W13/W2 stage schedules and accumulator epilogues."""
+
 from typing import NamedTuple
+
 import triton.experimental.gluon as g
-from triton.experimental.gluon import language as l
-from tokenspeed_kernel.thirdparty.petit_gluon.lib.tal.device import DeviceTemplate, device_method
-from tokenspeed_kernel.thirdparty.petit_gluon.lib.gemm.rocm.amd_intrinsics import (
-    _native_call, _resource_content, amdgcn_pk_mul_f32, amdgcn_cvt_pk_bf16_f32,
-    amdgcn_s_waitcnt_barrier, _uninitialized_like, _native_store_ushort_component,
+from lib.gemm.rocm.amd_intrinsics import (
+    _native_call,
+    _native_store_ushort_component,
+    _resource_content,
+    _uninitialized_like,
+    amdgcn_cvt_pk_bf16_f32,
+    amdgcn_pk_mul_f32,
+    amdgcn_s_waitcnt_barrier,
 )
-from tokenspeed_kernel.thirdparty.petit_gluon.lib.moe.rocm.fused_moe import ClearMat, HotLoopScheduler
-from tokenspeed_kernel.thirdparty.petit_gluon.lib.moe.rocm.ops.schedule_tiles import InputShm, MxFp4Tile
+from lib.moe.rocm.fused_moe import ClearMat, HotLoopScheduler
+from lib.moe.rocm.ops.schedule_tiles import InputShm, MxFp4Tile
+from lib.tal.device import DeviceTemplate, device_method
+from triton.experimental.gluon import language as l
 
 
 class W13State(NamedTuple):
@@ -23,8 +30,15 @@ class W13TileSchedule(DeviceTemplate):
     def __init__(self, TileOps):
         self._key = TileOps.cache_key
         self.TileOps, self.Config = TileOps, TileOps.Config
-        self.Input, self.Weight, self.Bias = self.Config.Input, self.Config.W13, self.Config.Bias
-        self.kNumWarps, self.kAccumFragments = TileOps.kNumWarps, TileOps.kAccumFragments
+        self.Input, self.Weight, self.Bias = (
+            self.Config.Input,
+            self.Config.W13,
+            self.Config.Bias,
+        )
+        self.kNumWarps, self.kAccumFragments = (
+            TileOps.kNumWarps,
+            TileOps.kAccumFragments,
+        )
         self.kActivationFragments = TileOps.kActivationFragments
 
     @device_method
@@ -35,7 +49,9 @@ class W13TileSchedule(DeviceTemplate):
     def InitializeBias(self, state, bias_ptr, expert_id, tile_k):
         projection_stride = self.Bias.PackedStride(self.Config.kInterDim)
         expert_stride = 2 * projection_stride
-        bias = self.Bias.Initialize(bias_ptr, expert_id, self.Config.kInterDim, tile_k, expert_stride)
+        bias = self.Bias.Initialize(
+            bias_ptr, expert_id, self.Config.kInterDim, tile_k, expert_stride
+        )
         return W13State(state.input, state.w1, bias, state.w1_tile, state.w3_tile)
 
     @device_method
@@ -46,7 +62,10 @@ class W13TileSchedule(DeviceTemplate):
     @device_method
     def ReadInput(self, state, shm, wtid):
         inp, regs = self.TileOps.ReadInput(state.input, shm, wtid)
-        return W13State(inp, state.w1, state.w13_bias, state.w1_tile, state.w3_tile), regs
+        return (
+            W13State(inp, state.w1, state.w13_bias, state.w1_tile, state.w3_tile),
+            regs,
+        )
 
     @device_method
     def LoadInitial(self, state, tid, wid, wtid):
@@ -67,14 +86,22 @@ class W13TileSchedule(DeviceTemplate):
     @device_method
     def AddBias(self, state, gate, up, tid):
         gate = self.Bias.AddToAccumulator(state.w13_bias, gate, 0, tid)
-        up = self.Bias.AddToAccumulator(state.w13_bias, up, self.Bias.PackedStride(self.Config.kInterDim), tid)
+        up = self.Bias.AddToAccumulator(
+            state.w13_bias, up, self.Bias.PackedStride(self.Config.kInterDim), tid
+        )
         return gate, up
 
     @device_method
     def LoadW3Tile(self, state, tid, wid, wtid):
-        kValueOffset: l.constexpr = self.Weight.ValueProjectionOffsetBytes(self.Config.kDim, self.Config.kInterDim)
-        kScaleOffset: l.constexpr = self.Weight.ScaleProjectionOffsetBytes(self.Config.kDim, self.Config.kInterDim)
-        return self.TileOps.LoadProjection(state.w1, tid, wid, wtid, kValueOffset, kScaleOffset)
+        kValueOffset: l.constexpr = self.Weight.ValueProjectionOffsetBytes(
+            self.Config.kDim, self.Config.kInterDim
+        )
+        kScaleOffset: l.constexpr = self.Weight.ScaleProjectionOffsetBytes(
+            self.Config.kDim, self.Config.kInterDim
+        )
+        return self.TileOps.LoadProjection(
+            state.w1, tid, wid, wtid, kValueOffset, kScaleOffset
+        )
 
 
 class W2State(NamedTuple):
@@ -88,7 +115,10 @@ class W2TileSchedule(DeviceTemplate):
         self._key = TileOps.cache_key
         self.TileOps, self.Config = TileOps, TileOps.Config
         self.Weight, self.Bias = self.Config.W2, self.Config.Stage2Bias
-        self.kNumWarps, self.kAccumFragments = TileOps.kNumWarps, TileOps.kAccumFragments
+        self.kNumWarps, self.kAccumFragments = (
+            TileOps.kNumWarps,
+            TileOps.kAccumFragments,
+        )
         self.kActivationFragments = TileOps.kActivationFragments
         self.kOutputPacksPerToken = TileOps.kOutputPacksPerToken
 
@@ -103,20 +133,22 @@ class W2TileSchedule(DeviceTemplate):
     def InitializeBias(self, state, bias_ptr, expert_id, tile_k):
         expert_stride = self.Bias.PackedStride(self.Config.kDim)
         bias_tile = tile_k if self.TileOps.kStage2BiasUsesTileK else 0
-        bias = self.Bias.Initialize(bias_ptr, expert_id, self.Config.kDim, bias_tile, expert_stride)
+        bias = self.Bias.Initialize(
+            bias_ptr, expert_id, self.Config.kDim, bias_tile, expert_stride
+        )
         return W2State(state.weight, bias, state.stages)
 
     @device_method
     def LoadStage(self, state, stage: l.constexpr, tid, wid, wtid):
         value = self.TileOps.Load(state.weight, tid, wid, wtid)
-        stages = state.stages[:stage] + (value,) + state.stages[stage + 1:]
+        stages = state.stages[:stage] + (value,) + state.stages[stage + 1 :]
         weight = self.Weight.AdvanceStep(state.weight, 1, 0)
         return W2State(weight, state.bias, stages)
 
     @device_method
     def LoadKStage(self, state, stage: l.constexpr, tid, wid, wtid):
         value = self.TileOps.Load(state.weight, tid, wid, wtid)
-        stages = state.stages[:stage] + (value,) + state.stages[stage + 1:]
+        stages = state.stages[:stage] + (value,) + state.stages[stage + 1 :]
         weight = self.Weight.AdvanceStep(state.weight, 0, self.TileOps.kKStages)
         return W2State(weight, state.bias, stages)
 
@@ -130,8 +162,15 @@ class OnestageFusedMoEStage1DoubleBufferOp(DeviceTemplate):
         self._key = TileSchedule.cache_key
         self.Tiles, self.Config = TileSchedule, TileSchedule.Config
         self.ActivationOp = self.Config.ActivationOp
-        self.kStage, self.kGroupDim, self.kTokenBatch = 2, self.Config.kGroupDim, self.Config.kTokenBatch
-        self.Input, self.kAccumFragments = TileSchedule.Input, TileSchedule.kAccumFragments
+        self.kStage, self.kGroupDim, self.kTokenBatch = (
+            2,
+            self.Config.kGroupDim,
+            self.Config.kTokenBatch,
+        )
+        self.Input, self.kAccumFragments = (
+            TileSchedule.Input,
+            TileSchedule.kAccumFragments,
+        )
         self.kShmStageWords = self.Input.kShmActWords + self.Input.kShmScaleWords
         self.kShmWords = self.kStage * self.kShmStageWords
 
@@ -155,15 +194,19 @@ class OnestageFusedMoEStage1DoubleBufferOp(DeviceTemplate):
                     HotLoopScheduler(128, 6, 0, 0, 2)
                     has_next: l.constexpr
                     has_next = d + (curr + 1) * self.kGroupDim < self.Config.kDim
-                    s = InputShm(shm + next * self.kShmStageWords,
-                                 shm + next * self.kShmStageWords + self.Input.kShmActWords)
+                    s = InputShm(
+                        shm + next * self.kShmStageWords,
+                        shm + next * self.kShmStageWords + self.Input.kShmActWords,
+                    )
                     if has_next:
                         state = self.Tiles.PrefetchInput(state, s, wid, wtid, tokens, m)
-                    state, t_gate, t_up = self.Tiles.Matmul(state, t_gate, t_up, x[curr], tid, wid, wtid)
+                    state, t_gate, t_up = self.Tiles.Matmul(
+                        state, t_gate, t_up, x[curr], tid, wid, wtid
+                    )
                     if has_next:
                         amdgcn_s_waitcnt_barrier(0)
                         state, regs = self.Tiles.ReadInput(state, s, wtid)
-                        x = x[:next] + (regs,) + x[next + 1:]
+                        x = x[:next] + (regs,) + x[next + 1 :]
         t_gate, t_up = self.Tiles.AddBias(state, t_gate, t_up, tid)
         h = ()
         for i in l.static_range(self.kAccumFragments):
@@ -186,7 +229,9 @@ class OnestageFusedMoEStage1SingleBufferOp(OnestageFusedMoEStage1DoubleBufferOp)
             state = self.Tiles.PrefetchInput(state, s, wid, wtid, tokens, m)
             amdgcn_s_waitcnt_barrier(0)
             state, x = self.Tiles.ReadInput(state, s, wtid)
-            state, t_gate, t_up = self.Tiles.Matmul(state, t_gate, t_up, x, tid, wid, wtid)
+            state, t_gate, t_up = self.Tiles.Matmul(
+                state, t_gate, t_up, x, tid, wid, wtid
+            )
         t_gate, t_up = self.Tiles.AddBias(state, t_gate, t_up, tid)
         h = ()
         for i in l.static_range(self.kAccumFragments):
@@ -196,8 +241,13 @@ class OnestageFusedMoEStage1SingleBufferOp(OnestageFusedMoEStage1DoubleBufferOp)
 
 @g.jit
 def BufferAtomicWriteBf16x2(base, vo, value):
-    _native_call('buffer.atomic.pk.add.bf16', 'void', ('v4i32', 'i32', 'i32'),
-                 (_resource_content(base), vo, value), False)
+    _native_call(
+        "buffer.atomic.pk.add.bf16",
+        "void",
+        ("v4i32", "i32", "i32"),
+        (_resource_content(base), vo, value),
+        False,
+    )
 
 
 @g.jit
@@ -210,7 +260,7 @@ def MultRouteWeights(t, rw2):
             f = t[j * 2 + i]
             xy = amdgcn_pk_mul_f32(f[:2], rw_pk)
             zw = amdgcn_pk_mul_f32(f[2:], rw_pk)
-            t = t[:j * 2 + i] + (xy + zw,) + t[j * 2 + i + 1:]
+            t = t[: j * 2 + i] + (xy + zw,) + t[j * 2 + i + 1 :]
     return t
 
 
@@ -230,7 +280,7 @@ class W2AccumulatorEpilogue(DeviceTemplate):
         return self.Bias.PrefetchFragments(tiles_state.bias, tile_col, tid)
 
     @device_method
-    def Apply(self, accum, bias, route_weights, SelectedBias: l.constexpr=None):
+    def Apply(self, accum, bias, route_weights, SelectedBias: l.constexpr = None):
         if SelectedBias is None:
             accum = self.Bias.Apply(accum, bias)
         else:
@@ -267,13 +317,17 @@ class TwoStageStage2Epilogue(DeviceTemplate):
     @device_method
     def StoreRouteWeight(self, shm, row, weight):
         if row < self.kTileRows:
-            route_weights = (shm + self.kOutputWords + self.kTileRows).to(l.pointer_type(l.float32, 3))
+            route_weights = (shm + self.kOutputWords + self.kTileRows).to(
+                l.pointer_type(l.float32, 3)
+            )
             l.store(route_weights + row, weight.to(l.float32, bitcast=True))
 
     @device_method
     def LoadRouteWeights(self, shm, wtid):
         row = wtid % 16
-        weights = (shm + self.kOutputWords + self.kTileRows).to(l.pointer_type(l.float32, 3))
+        weights = (shm + self.kOutputWords + self.kTileRows).to(
+            l.pointer_type(l.float32, 3)
+        )
         return l.load(weights + row), l.load(weights + row + 16)
 
     @device_method
@@ -289,7 +343,12 @@ class TwoStageStage2Epilogue(DeviceTemplate):
                     packed = amdgcn_cvt_pk_bf16_f32(value, value)
                     row = mi * 16 + r
                     col = wid * 64 + ni * 16 + q * 4 + component
-                    _native_store_ushort_component(output, row * self.kTileCols + col, packed.to(l.uint16), component)
+                    _native_store_ushort_component(
+                        output,
+                        row * self.kTileCols + col,
+                        packed.to(l.uint16),
+                        component,
+                    )
 
     @device_method
     def WriteBack(self, out, shm, tile_col, tid):

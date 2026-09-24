@@ -1,11 +1,13 @@
 """Standalone, host-only HIP VMM allocator; contains no device kernels."""
+
 from functools import cache
 from pathlib import Path
 
 
 @cache
 def runtime():
-    from torch.utils.cpp_extension import load, ROCM_HOME
+    from torch.utils.cpp_extension import ROCM_HOME, load
+
     root = Path(__file__).resolve().parent
     return load(
         name="gluon_petit_vmm",

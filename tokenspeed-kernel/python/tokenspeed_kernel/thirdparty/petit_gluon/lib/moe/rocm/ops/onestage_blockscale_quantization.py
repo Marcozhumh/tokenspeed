@@ -23,9 +23,7 @@
 """Native online row maximum, FP8 packing, and LDS shuffle."""
 
 import triton.experimental.gluon as g
-from triton.experimental.gluon import language as l
-
-from tokenspeed_kernel.thirdparty.petit_gluon.lib.gemm.rocm.amd_intrinsics import (
+from lib.gemm.rocm.amd_intrinsics import (
     _pack_float2,
     _unpack_float2,
     amdgcn_cvt_pk_fp8_f32,
@@ -33,8 +31,9 @@ from tokenspeed_kernel.thirdparty.petit_gluon.lib.gemm.rocm.amd_intrinsics impor
     amdgcn_rcpf,
     kWarpSize,
 )
-from tokenspeed_kernel.thirdparty.petit_gluon.lib.moe.rocm.memory_ops import _load_uint2
-from tokenspeed_kernel.thirdparty.petit_gluon.lib.tal.tensor.layout import Layout, Shape, Stride, make_coord
+from lib.moe.rocm.memory_ops import _load_uint2
+from lib.tal.tensor.layout import Layout, Shape, Stride, make_coord
+from triton.experimental.gluon import language as l
 
 
 @g.jit
@@ -142,7 +141,9 @@ class QuantizeAndShuffleFp8:
     @g.jit
     def WriteShm(shm_q_h, q, wid, wtid):
         layout: l.constexpr = QuantizeAndShuffleFp8.ShmWriteLayout
-        kElementsPerThreadVec4: l.constexpr = QuantizeAndShuffleFp8.kElementsPerThreadVec4
+        kElementsPerThreadVec4: l.constexpr = (
+            QuantizeAndShuffleFp8.kElementsPerThreadVec4
+        )
         for i in l.static_range(kElementsPerThreadVec4):
             idx = layout(make_coord(i, wid, wtid))
             l.store(shm_q_h + idx, q[i])

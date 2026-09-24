@@ -27,9 +27,8 @@ from hashlib import sha256
 from pathlib import Path
 
 import torch
-from tokenspeed_kernel.thirdparty.petit_gluon.lib.streams import native_stream
 import triton.experimental.gluon as g
-from tokenspeed_kernel.thirdparty.petit_gluon.lib.gemm.rocm.amd_intrinsics import (
+from lib.gemm.rocm.amd_intrinsics import (
     BufferResource,
     _amdgcn_dequant_library,
     _amdgcn_intrinsics_library,
@@ -37,7 +36,8 @@ from tokenspeed_kernel.thirdparty.petit_gluon.lib.gemm.rocm.amd_intrinsics impor
     amdgcn_readfirstlane,
     kWarpSize,
 )
-from tokenspeed_kernel.thirdparty.petit_gluon.lib.moe.rocm.memory_ops import InputLayout, MakeBufferResource
+from lib.moe.rocm.memory_ops import InputLayout, MakeBufferResource
+from lib.streams import native_stream
 from triton.experimental.gluon import language as l
 
 

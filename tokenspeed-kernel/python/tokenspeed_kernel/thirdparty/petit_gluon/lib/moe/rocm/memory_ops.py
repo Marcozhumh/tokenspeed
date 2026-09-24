@@ -27,15 +27,20 @@ from typing import NamedTuple
 
 import triton
 import triton.experimental.gluon as g
+from lib.gemm.rocm.amd_intrinsics import (
+    BufferResource,
+    BufferResourceFields,
+    _native_load_vector4,
+    _native_store_vector4,
+    _resource_content,
+    _uninitialized_like,
+    kWarpSize,
+    llvm_amdgcn_raw_buffer_load_v4i32,
+)
+from lib.tal.device import DeviceTemplate, device_method
+from lib.tal.host_device import host_device
 from triton.experimental.gluon import language as l
 from triton.experimental.gluon.language._core import builtin
-
-from tokenspeed_kernel.thirdparty.petit_gluon.lib.gemm.rocm.amd_intrinsics import (BufferResource,
-    BufferResourceFields, _uninitialized_like, kWarpSize,
-    llvm_amdgcn_raw_buffer_load_v4i32, _resource_content)
-from tokenspeed_kernel.thirdparty.petit_gluon.lib.gemm.rocm.amd_intrinsics import _native_load_vector4, _native_store_vector4
-from tokenspeed_kernel.thirdparty.petit_gluon.lib.tal.device import DeviceTemplate, device_method
-from tokenspeed_kernel.thirdparty.petit_gluon.lib.tal.host_device import host_device
 
 
 class MoeArchitecture(IntEnum):
@@ -258,9 +263,7 @@ class W13Layout:
         )
         value = BufferResource.LoadU32(
             scales_, off, s_offset_, BufferResource.kNone
-        ).to(
-            l.float32, bitcast=True
-        )
+        ).to(l.float32, bitcast=True)
         return value, state
 
     @g.jit
@@ -324,10 +327,7 @@ class W2Layout(MatrixLayout):
     @g.jit
     def LoadScale(state, tid):
         _, scales_, stride_n_, _ = state
-        off = (
-            (tid & 1) * stride_n_ // W2Layout.kScaleBlockSize * 4
-            + (tid & 2) * 2
-        )
+        off = (tid & 1) * stride_n_ // W2Layout.kScaleBlockSize * 4 + (tid & 2) * 2
         value = BufferResource.LoadU32(
             scales_, off, l.full((), 0, l.int32), BufferResource.kNone
         ).to(l.float32, bitcast=True)
@@ -612,8 +612,8 @@ class _MxFp4WeightLayoutSpecialization(DeviceTemplate):
         self.LayoutSelector = MxFp4WeightLayoutSelector(kLayout, kNumWarps)
         self.kNumWarps, self.kThreads = kNumWarps, kNumWarps * 64
         self.kGroupM, self.kRowGroupSize = 128, 32
-        self.kRefBufferRange, self.kScaleBlockSize = 0xfffffff0, 128
-        for field in ('kGroupN', 'kTileM', 'kWaveTileM', 'kWaveTileN', 'kLoadGlobal'):
+        self.kRefBufferRange, self.kScaleBlockSize = 0xFFFFFFF0, 128
+        for field in ("kGroupN", "kTileM", "kWaveTileM", "kWaveTileN", "kLoadGlobal"):
             setattr(self, field, getattr(self.LayoutSelector, field))
         assert self.kGroupN % 64 == 0
 
@@ -628,26 +628,49 @@ class _MxFp4WeightLayoutSpecialization(DeviceTemplate):
     @device_method
     def Initialize(self, value_ptr, value_range, scale_ptr, scale_range, stride_n):
         zero = l.full((), 0, l.uint32)
-        return _MxFp4State(MakeBufferResource(value_ptr, value_range),
-                           MakeBufferResource(scale_ptr, scale_range),
-                           (zero + stride_n).to(l.uint32), zero, zero)
+        return _MxFp4State(
+            MakeBufferResource(value_ptr, value_range),
+            MakeBufferResource(scale_ptr, scale_range),
+            (zero + stride_n).to(l.uint32),
+            zero,
+            zero,
+        )
 
     @device_method
     def AdvanceStep(self, state, kTileN: l.constexpr, kTileK: l.constexpr):
         l.static_assert(kTileK % 2 == 0, "block scales advance in K256 units")
-        v_offset = state.v_offset_ + kTileN * 256 * state.stride_n_ // 2 + kTileK * 64 * 16
-        s_offset = state.s_offset_ + kTileN * 256 * state.stride_n_ // self.kRowGroupSize
+        v_offset = (
+            state.v_offset_ + kTileN * 256 * state.stride_n_ // 2 + kTileK * 64 * 16
+        )
+        s_offset = (
+            state.s_offset_ + kTileN * 256 * state.stride_n_ // self.kRowGroupSize
+        )
         s_offset += (kTileK // 2) * 64 * 4
         return _MxFp4State(state.v_, state.scales_, state.stride_n_, v_offset, s_offset)
 
     @device_method
-    def LoadTile(self, state, stage, wid, wtid, value_offset=0, kAux: l.constexpr=TargetWeightLoadPolicy.kAux):
+    def LoadTile(
+        self,
+        state,
+        stage,
+        wid,
+        wtid,
+        value_offset=0,
+        kAux: l.constexpr = TargetWeightLoadPolicy.kAux,
+    ):
         lane_k_offset = wtid * 16
         k_offset = self.LayoutSelector.K128OffsetBytes(stage)
         regs = ()
         for fragment in l.static_range(self.kLoadGlobal):
-            voffset = self.LayoutSelector.ValueOffsetBytes(wid, fragment, state.stride_n_) + lane_k_offset + k_offset + value_offset
-            value = llvm_amdgcn_raw_buffer_load_v4i32(_resource_content(state.v_), voffset, state.v_offset_, kAux)
+            voffset = (
+                self.LayoutSelector.ValueOffsetBytes(wid, fragment, state.stride_n_)
+                + lane_k_offset
+                + k_offset
+                + value_offset
+            )
+            value = llvm_amdgcn_raw_buffer_load_v4i32(
+                _resource_content(state.v_), voffset, state.v_offset_, kAux
+            )
             regs += (value,)
         return regs
 
@@ -655,12 +678,19 @@ class _MxFp4WeightLayoutSpecialization(DeviceTemplate):
     def LoadScale(self, state, wid, wtid, n32_pair, scale_offset=0):
         if self.kLayout == 1:
             off = wid * state.stride_n_ + wtid * 4 + scale_offset
-            return BufferResource.LoadU32(state.scales_, off, state.s_offset_, BufferResource.kNone)
+            return BufferResource.LoadU32(
+                state.scales_, off, state.s_offset_, BufferResource.kNone
+            )
         else:
             k256_blocks = state.stride_n_ // 256
             n32 = self.LayoutSelector.N32Offset(wid, n32_pair)
             word = n32 * k256_blocks * 64 + wtid
-            return BufferResource.LoadU32(state.scales_, word * 4 + scale_offset, state.s_offset_, BufferResource.kNone)
+            return BufferResource.LoadU32(
+                state.scales_,
+                word * 4 + scale_offset,
+                state.s_offset_,
+                BufferResource.kNone,
+            )
 
 
 @g.jit

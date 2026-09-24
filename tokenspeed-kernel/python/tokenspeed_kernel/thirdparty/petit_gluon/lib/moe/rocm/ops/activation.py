@@ -1,10 +1,13 @@
 """Production activation operations from moe/rocm/ops/activation.cuh."""
 
 import triton.experimental.gluon as g
-from triton.experimental.gluon import language as l
-from tokenspeed_kernel.thirdparty.petit_gluon.lib.gemm.rocm.amd_intrinsics import (
-    amdgcn_exp2f, amdgcn_rcpf, amdgcn_pk_mul_f32, amdgcn_pk_add_f32,
+from lib.gemm.rocm.amd_intrinsics import (
+    amdgcn_exp2f,
+    amdgcn_pk_add_f32,
+    amdgcn_pk_mul_f32,
+    amdgcn_rcpf,
 )
+from triton.experimental.gluon import language as l
 
 
 class SiluDotOp:
@@ -17,13 +20,19 @@ class SiluDotOp:
         kOne2: l.constexpr = (1.0, 1.0)
         g2 = (gate[:2], gate[2:])
         u2 = (up[:2], up[2:])
-        i2 = (amdgcn_pk_mul_f32(g2[0], kMinusLog2e2),
-              amdgcn_pk_mul_f32(g2[1], kMinusLog2e2))
-        i2 = ((amdgcn_exp2f(i2[0][0]), amdgcn_exp2f(i2[0][1])),
-              (amdgcn_exp2f(i2[1][0]), amdgcn_exp2f(i2[1][1])))
+        i2 = (
+            amdgcn_pk_mul_f32(g2[0], kMinusLog2e2),
+            amdgcn_pk_mul_f32(g2[1], kMinusLog2e2),
+        )
+        i2 = (
+            (amdgcn_exp2f(i2[0][0]), amdgcn_exp2f(i2[0][1])),
+            (amdgcn_exp2f(i2[1][0]), amdgcn_exp2f(i2[1][1])),
+        )
         i2 = (amdgcn_pk_add_f32(i2[0], kOne2), amdgcn_pk_add_f32(i2[1], kOne2))
-        i2 = ((amdgcn_rcpf(i2[0][0]), amdgcn_rcpf(i2[0][1])),
-              (amdgcn_rcpf(i2[1][0]), amdgcn_rcpf(i2[1][1])))
+        i2 = (
+            (amdgcn_rcpf(i2[0][0]), amdgcn_rcpf(i2[0][1])),
+            (amdgcn_rcpf(i2[1][0]), amdgcn_rcpf(i2[1][1])),
+        )
         i2f = i2
         r0 = amdgcn_pk_mul_f32(amdgcn_pk_mul_f32(gate[:2], i2f[0]), u2[0])
         r1 = amdgcn_pk_mul_f32(amdgcn_pk_mul_f32(gate[2:], i2f[1]), u2[1])
@@ -43,7 +52,9 @@ class KimiSituOp:
         g, u = gate, up
         for i in l.static_range(4):
             sig = amdgcn_rcpf(1.0 + amdgcn_exp2f(kMinusLog2e * g[i]))
-            tanh_gate = 2.0 * amdgcn_rcpf(1.0 + amdgcn_exp2f(kGateTanhScale * g[i])) - 1.0
+            tanh_gate = (
+                2.0 * amdgcn_rcpf(1.0 + amdgcn_exp2f(kGateTanhScale * g[i])) - 1.0
+            )
             tanh_up = 2.0 * amdgcn_rcpf(1.0 + amdgcn_exp2f(kUpTanhScale * u[i])) - 1.0
             result += ((4.0 * tanh_gate * sig) * (25.0 * tanh_up),)
         return result

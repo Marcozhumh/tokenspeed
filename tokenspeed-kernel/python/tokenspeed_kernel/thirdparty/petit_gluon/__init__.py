@@ -18,13 +18,43 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
-"""Vendored Gluon Petit MegaMoE runtime."""
+"""Loader boundary for the unchanged vendored Gluon Petit source."""
 
-from tokenspeed_kernel._triton import redirect_triton_to_tokenspeed_triton
+from __future__ import annotations
 
-# Petit imports upstream ``triton`` module names. Bind those imports to the
-# TokenSpeed Triton distribution while the complete runtime closure is loaded.
-with redirect_triton_to_tokenspeed_triton():
-    from tokenspeed_kernel.thirdparty.petit_gluon import petit_kernel
+import importlib
+import sys
+from pathlib import Path
+from types import ModuleType
 
-__all__ = ["petit_kernel"]
+
+def _is_below(path: str, root: Path) -> bool:
+    try:
+        Path(path).resolve().relative_to(root)
+    except ValueError:
+        return False
+    return True
+
+
+def load_petit_kernel() -> ModuleType:
+    """Load Petit's upstream-rooted packages without editing their imports."""
+    vendor_root = Path(__file__).resolve().parent
+    for package_name in ("petit_kernel", "lib"):
+        module = sys.modules.get(package_name)
+        module_file = getattr(module, "__file__", None)
+        if module_file is not None and not _is_below(module_file, vendor_root):
+            raise RuntimeError(
+                f"Cannot load vendored Gluon Petit: {package_name!r} is already "
+                f"loaded from {module_file}"
+            )
+
+    vendor_path = str(vendor_root)
+    if vendor_path not in sys.path:
+        sys.path.insert(0, vendor_path)
+    importlib.invalidate_caches()
+    return importlib.import_module("petit_kernel")
+
+
+petit_kernel = load_petit_kernel()
+
+__all__ = ["load_petit_kernel", "petit_kernel"]

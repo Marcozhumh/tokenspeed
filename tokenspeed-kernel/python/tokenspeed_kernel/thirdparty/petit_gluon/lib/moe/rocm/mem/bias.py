@@ -1,12 +1,14 @@
 """Native TAL bias layouts and optional BF16 projection biases."""
+
 from typing import NamedTuple
+
 import triton.experimental.gluon as g
+from lib.gemm.rocm.amd_intrinsics import BufferResource
+from lib.moe.rocm.memory_ops import MakeBufferResource
+from lib.tal.device import DeviceTemplate, device_method
+from lib.tal.host_device import host_device
+from lib.tal.tensor.layout import Layout, Shape, Stride, make_coord
 from triton.experimental.gluon import language as l
-from tokenspeed_kernel.thirdparty.petit_gluon.lib.tal.device import DeviceTemplate, device_method
-from tokenspeed_kernel.thirdparty.petit_gluon.lib.tal.host_device import host_device
-from tokenspeed_kernel.thirdparty.petit_gluon.lib.tal.tensor.layout import Layout, Shape, Stride, make_coord
-from tokenspeed_kernel.thirdparty.petit_gluon.lib.gemm.rocm.amd_intrinsics import BufferResource
-from tokenspeed_kernel.thirdparty.petit_gluon.lib.moe.rocm.memory_ops import MakeBufferResource
 
 
 def MxFp4BiasLayout(kGroupM, kGroupN):
@@ -15,12 +17,17 @@ def MxFp4BiasLayout(kGroupM, kGroupN):
     if (kGroupM, kGroupN) == (32, 256):
         return Layout(Shape(4, 4, 4), Stride(4, 16, 64))
     if (kGroupM, kGroupN) == (64, 256):
-        return Layout(Shape(Shape(4, 2), 4, Shape(2, 2)), Stride(Stride(4, 64), 16, Stride(128, 0)))
-    raise ValueError('unsupported native bias layout')
+        return Layout(
+            Shape(Shape(4, 2), 4, Shape(2, 2)),
+            Stride(Stride(4, 64), 16, Stride(128, 0)),
+        )
+    raise ValueError("unsupported native bias layout")
 
 
 MxFp4BiasLayoutM64N256 = MxFp4BiasLayout(64, 256)
-MxFp4BiasLayoutM64N256W8 = Layout(Shape(2, 4, Shape(2, 4)), Stride(4, 16, Stride(8, 64)))
+MxFp4BiasLayoutM64N256W8 = Layout(
+    Shape(2, 4, Shape(2, 4)), Stride(4, 16, Stride(8, 64))
+)
 
 
 class Bf16BiasAccess(DeviceTemplate):
@@ -46,10 +53,12 @@ class Bf16BiasAccess(DeviceTemplate):
 
 @g.jit
 def Bf16BiasToFloat(packed):
-    return ((packed[0] << 16).to(l.float32, bitcast=True),
-            (packed[0] & 0xffff0000).to(l.float32, bitcast=True),
-            (packed[1] << 16).to(l.float32, bitcast=True),
-            (packed[1] & 0xffff0000).to(l.float32, bitcast=True))
+    return (
+        (packed[0] << 16).to(l.float32, bitcast=True),
+        (packed[0] & 0xFFFF0000).to(l.float32, bitcast=True),
+        (packed[1] << 16).to(l.float32, bitcast=True),
+        (packed[1] & 0xFFFF0000).to(l.float32, bitcast=True),
+    )
 
 
 class BiasState(NamedTuple):
@@ -71,7 +80,9 @@ class Bf16BiasLayout(DeviceTemplate):
 
     @host_device
     def PackedStride(self, dim):
-        return ((dim + self.kPackedTileElements - 1) // self.kPackedTileElements) * self.kPackedTileElements
+        return (
+            (dim + self.kPackedTileElements - 1) // self.kPackedTileElements
+        ) * self.kPackedTileElements
 
     @device_method
     def Initialize(self, value_ptr, expert_id, dim, tile_k, expert_stride):
@@ -81,7 +92,9 @@ class Bf16BiasLayout(DeviceTemplate):
             address = l.full((), 0, l.uint64)
         else:
             address = value_ptr.to(l.uint64)
-        byte_range = l.where(address == 0, 0, (expert_stride - tile_col) * self.kElementBytes)
+        byte_range = l.where(
+            address == 0, 0, (expert_stride - tile_col) * self.kElementBytes
+        )
         ptr = (address + value_offset * self.kElementBytes).to(l.pointer_type(l.uint8))
         return BiasState(MakeBufferResource(ptr, byte_range))
 
@@ -92,7 +105,9 @@ class Bf16BiasLayout(DeviceTemplate):
 
     @device_method
     def PrefetchFragments(self, state, tile_col, tid):
-        return BiasPrefetch(self.Access.LoadFragments(state, tile_col, tid, self.kLoadGlobal))
+        return BiasPrefetch(
+            self.Access.LoadFragments(state, tile_col, tid, self.kLoadGlobal)
+        )
 
     @device_method
     def Apply(self, t, prefetch):
@@ -101,9 +116,13 @@ class Bf16BiasLayout(DeviceTemplate):
             for m16 in l.static_range(self.kMRepeats):
                 idx: l.constexpr
                 idx = self.kMRepeats * fragment + m16
-                result = (t[idx][0] + value[0], t[idx][1] + value[1],
-                          t[idx][2] + value[2], t[idx][3] + value[3])
-                t = t[:idx] + (result,) + t[idx + 1:]
+                result = (
+                    t[idx][0] + value[0],
+                    t[idx][1] + value[1],
+                    t[idx][2] + value[2],
+                    t[idx][3] + value[3],
+                )
+                t = t[:idx] + (result,) + t[idx + 1 :]
         return t
 
 

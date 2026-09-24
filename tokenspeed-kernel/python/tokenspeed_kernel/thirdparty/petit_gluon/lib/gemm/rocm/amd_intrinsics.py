@@ -122,45 +122,61 @@ def llvm_amdgcn_raw_buffer_load_i32(rsrc, voffset, soffset, aux: l.constexpr):
 @g.jit
 def llvm_amdgcn_raw_buffer_store_v2i32(data, rsrc, voffset, soffset, aux: l.constexpr):
     return _native_call(
-        "llvm.amdgcn.raw.buffer.store.v2i32", "void",
+        "llvm.amdgcn.raw.buffer.store.v2i32",
+        "void",
         ("v2i32", "v4i32", "i32", "i32", "#i32"),
-        (data, rsrc, voffset, soffset, aux), False,
+        (data, rsrc, voffset, soffset, aux),
+        False,
     )
 
 
 @g.jit
 def llvm_amdgcn_raw_buffer_store_i32(data, rsrc, voffset, soffset, aux: l.constexpr):
     return _native_call(
-        "llvm.amdgcn.raw.buffer.store.i32", "void",
+        "llvm.amdgcn.raw.buffer.store.i32",
+        "void",
         ("i32", "v4i32", "i32", "i32", "#i32"),
-        (data, rsrc, voffset, soffset, aux), False,
+        (data, rsrc, voffset, soffset, aux),
+        False,
     )
 
 
 @g.jit
-def llvm_amdgcn_raw_buffer_atomic_add_i32(data, rsrc, voffset, soffset, aux: l.constexpr):
+def llvm_amdgcn_raw_buffer_atomic_add_i32(
+    data, rsrc, voffset, soffset, aux: l.constexpr
+):
     return _native_call(
-        "llvm.amdgcn.raw.buffer.atomic.add.i32", "i32",
+        "llvm.amdgcn.raw.buffer.atomic.add.i32",
+        "i32",
         ("i32", "v4i32", "i32", "i32", "#i32"),
-        (data, rsrc, voffset, soffset, aux), False,
+        (data, rsrc, voffset, soffset, aux),
+        False,
     )
 
 
 @g.jit
-def llvm_amdgcn_raw_buffer_atomic_or_i32(data, rsrc, voffset, soffset, aux: l.constexpr):
+def llvm_amdgcn_raw_buffer_atomic_or_i32(
+    data, rsrc, voffset, soffset, aux: l.constexpr
+):
     return _native_call(
-        "llvm.amdgcn.raw.buffer.atomic.or.i32", "i32",
+        "llvm.amdgcn.raw.buffer.atomic.or.i32",
+        "i32",
         ("i32", "v4i32", "i32", "i32", "#i32"),
-        (data, rsrc, voffset, soffset, aux), False,
+        (data, rsrc, voffset, soffset, aux),
+        False,
     )
 
 
 @g.jit
-def llvm_amdgcn_raw_buffer_atomic_add_i64(data, rsrc, voffset, soffset, aux: l.constexpr):
+def llvm_amdgcn_raw_buffer_atomic_add_i64(
+    data, rsrc, voffset, soffset, aux: l.constexpr
+):
     return _native_call(
-        "llvm.amdgcn.raw.buffer.atomic.add.i64", "i64",
+        "llvm.amdgcn.raw.buffer.atomic.add.i64",
+        "i64",
         ("i64", "v4i32", "i32", "i32", "#i32"),
-        (data, rsrc, voffset, soffset, aux), False,
+        (data, rsrc, voffset, soffset, aux),
+        False,
     )
 
 
@@ -332,9 +348,21 @@ def mma_m32n32k8_bf16(fa, fb, c):
 def mma_m16n16k128_fp8_fp8_f32(fa, fb, c):
     if HAS_AMD_SCALE_FP4_MFMA:
         return _native_call(
-            "llvm.amdgcn.mfma.scale.f32.16x16x128.f8f6f4.v8i32.v8i32", "v4f32",
+            "llvm.amdgcn.mfma.scale.f32.16x16x128.f8f6f4.v8i32.v8i32",
+            "v4f32",
             ("v8i32", "v8i32", "v4f32", "#i32", "#i32", "#i32", "i32", "#i32", "i32"),
-            (fa[0] + fa[1] + fa[2] + fa[3], fb[0] + fb[1] + fb[2] + fb[3], c, 0, 0, 0, 0, 0, 0), True,
+            (
+                fa[0] + fa[1] + fa[2] + fa[3],
+                fb[0] + fb[1] + fb[2] + fb[3],
+                c,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+            ),
+            True,
         )
     elif HAS_AMD_FP8_MFMA:
         c = mma_m16n16k32_fp8_fp8_f32(fa[0], fb[0], c)
@@ -343,16 +371,30 @@ def mma_m16n16k128_fp8_fp8_f32(fa, fb, c):
         c = mma_m16n16k32_fp8_fp8_f32(fa[3], fb[3], c)
         return c
     else:
-        return (c[0] * 0., c[1] * 0., c[2] * 0., c[3] * 0.)
+        return (c[0] * 0.0, c[1] * 0.0, c[2] * 0.0, c[3] * 0.0)
 
 
 @g.jit
-def mma_scale_m16n16k128_fp4_fp4_f32(fa, scale_a, fb, scale_b, c, kOpSelA: l.constexpr, kOpSelB: l.constexpr):
+def mma_scale_m16n16k128_fp4_fp4_f32(
+    fa, scale_a, fb, scale_b, c, kOpSelA: l.constexpr, kOpSelB: l.constexpr
+):
     if HAS_AMD_SCALE_FP4_MFMA:
         return _native_call(
-            "llvm.amdgcn.mfma.scale.f32.16x16x128.f8f6f4.v8i32.v8i32", "v4f32",
+            "llvm.amdgcn.mfma.scale.f32.16x16x128.f8f6f4.v8i32.v8i32",
+            "v4f32",
             ("v8i32", "v8i32", "v4f32", "#i32", "#i32", "#i32", "i32", "#i32", "i32"),
-            (fa + (0, 0, 0, 0), fb + (0, 0, 0, 0), c, 4, 4, kOpSelA, scale_a, kOpSelB, scale_b), True,
+            (
+                fa + (0, 0, 0, 0),
+                fb + (0, 0, 0, 0),
+                c,
+                4,
+                4,
+                kOpSelA,
+                scale_a,
+                kOpSelB,
+                scale_b,
+            ),
+            True,
         )
     else:
         return c
@@ -360,13 +402,13 @@ def mma_scale_m16n16k128_fp4_fp4_f32(fa, scale_a, fb, scale_b, c, kOpSelA: l.con
 
 @g.jit
 def amdgcn_wave_inclusive_add(value, lane):
-    remote = amdgcn_mov_dpp(value, 0x111, 0xf, 0xf, True)
+    remote = amdgcn_mov_dpp(value, 0x111, 0xF, 0xF, True)
     value = l.where(lane >= 1, value + remote, value)
-    remote = amdgcn_mov_dpp(value, 0x112, 0xf, 0xf, True)
+    remote = amdgcn_mov_dpp(value, 0x112, 0xF, 0xF, True)
     value = l.where(lane >= 2, value + remote, value)
-    remote = amdgcn_mov_dpp(value, 0x114, 0xf, 0xf, True)
+    remote = amdgcn_mov_dpp(value, 0x114, 0xF, 0xF, True)
     value = l.where(lane >= 4, value + remote, value)
-    remote = amdgcn_mov_dpp(value, 0x118, 0xf, 0xf, True)
+    remote = amdgcn_mov_dpp(value, 0x118, 0xF, 0xF, True)
     value = l.where(lane >= 8, value + remote, value)
     source16 = (lane & 0x30) - 1
     remote = amdgcn_ds_bpermute(source16 * 4, value)
@@ -413,10 +455,15 @@ class BufferResource(NamedTuple):
     @g.jit
     def WithOffset(resource, byte_offset):
         content = _resource_content(resource)
-        address = (content[0].to(l.uint64) |
-                   (content[1].to(l.uint64) << 32)) + byte_offset
-        content = (address.to(l.uint32), (address >> 32).to(l.uint32),
-                   content[2], content[3])
+        address = (
+            content[0].to(l.uint64) | (content[1].to(l.uint64) << 32)
+        ) + byte_offset
+        content = (
+            address.to(l.uint32),
+            (address >> 32).to(l.uint32),
+            content[2],
+            content[3],
+        )
         return BufferResource(
             BufferResourceFields(address, resource.v.range, resource.v.config),
             content,
@@ -431,9 +478,12 @@ class BufferResource(NamedTuple):
             return v
         else:
             # Existing callers index the uint4 register array through its last axis.
-            V: l.constexpr = l.BlockedLayout([1, 4], [64, 1], [l.num_warps(), 1], [1, 0])
+            V: l.constexpr = l.BlockedLayout(
+                [1, 4], [64, 1], [l.num_warps(), 1], [1, 0]
+            )
             return l.convert_layout(
-                l.join(l.join(v[0], v[2]), l.join(v[1], v[3])).reshape([v[0].numel, 4]), V
+                l.join(l.join(v[0], v[2]), l.join(v[1], v[3])).reshape([v[0].numel, 4]),
+                V,
             )
 
     @g.jit
@@ -442,7 +492,9 @@ class BufferResource(NamedTuple):
         llvm_amdgcn_raw_buffer_store_v4i32(
             data,
             _resource_content(resource),
-            l.where(predicate, (l.full((), 0, l.uint32) + voffset).to(l.uint32), 0xFFFFFFFF),
+            l.where(
+                predicate, (l.full((), 0, l.uint32) + voffset).to(l.uint32), 0xFFFFFFFF
+            ),
             soffset,
             AUX,
         )
@@ -468,11 +520,17 @@ class BufferResource(NamedTuple):
     @g.jit
     def StoreU32(resource, voffset, soffset, data, AUX: l.constexpr, predicate=True):
         if isinstance(predicate, l.constexpr) and predicate:
-            llvm_amdgcn_raw_buffer_store_i32(data, _resource_content(resource), voffset, soffset, AUX)
+            llvm_amdgcn_raw_buffer_store_i32(
+                data, _resource_content(resource), voffset, soffset, AUX
+            )
         else:
-            _native_call("when:llvm.amdgcn.raw.buffer.store.i32", "void",
-                         ("i32", "v4i32", "i32", "i32", "#i32", "i1"),
-                         (data, _resource_content(resource), voffset, soffset, AUX, predicate), False)
+            _native_call(
+                "when:llvm.amdgcn.raw.buffer.store.i32",
+                "void",
+                ("i32", "v4i32", "i32", "i32", "#i32", "i1"),
+                (data, _resource_content(resource), voffset, soffset, AUX, predicate),
+                False,
+            )
 
     @g.jit
     def AtomicAddI32(resource, voffset, soffset, data, AUX: l.constexpr):
@@ -508,13 +566,31 @@ class BufferResource(NamedTuple):
     ):
         if isinstance(predicate, l.constexpr) and predicate:
             llvm_amdgcn_raw_buffer_load_lds(
-                _resource_content(resource), lds_ptr, SIZE, voffset, soffset, OFFSET, AUX
+                _resource_content(resource),
+                lds_ptr,
+                SIZE,
+                voffset,
+                soffset,
+                OFFSET,
+                AUX,
             )
         else:
-            _native_call("when:llvm.amdgcn.raw.buffer.load.lds", "void",
-                         ("v4i32", "p3", "#i32", "i32", "i32", "#i32", "#i32", "i1"),
-                         (_resource_content(resource), lds_ptr.to(l.uint64).to(l.uint32), SIZE,
-                          voffset, soffset, OFFSET, AUX, predicate), False)
+            _native_call(
+                "when:llvm.amdgcn.raw.buffer.load.lds",
+                "void",
+                ("v4i32", "p3", "#i32", "i32", "i32", "#i32", "#i32", "i1"),
+                (
+                    _resource_content(resource),
+                    lds_ptr.to(l.uint64).to(l.uint32),
+                    SIZE,
+                    voffset,
+                    soffset,
+                    OFFSET,
+                    AUX,
+                    predicate,
+                ),
+                False,
+            )
 
 
 @g.jit
@@ -596,15 +672,20 @@ def amdgcn_ds_bpermute(index, src):
 
 @g.jit
 def amdgcn_cvt_scalef32_pk_fp4_f32(old, a, b, scale, byte: l.constexpr):
-    return _native_call("llvm.amdgcn.cvt.scalef32.pk.fp4.f32", "i32",
-                        ("i32", "f32", "f32", "f32", "#i32"),
-                        (old, a, b, scale, byte), True)
+    return _native_call(
+        "llvm.amdgcn.cvt.scalef32.pk.fp4.f32",
+        "i32",
+        ("i32", "f32", "f32", "f32", "#i32"),
+        (old, a, b, scale, byte),
+        True,
+    )
 
 
 @g.jit
 def amdgcn_ds_swizzle(value, pattern: l.constexpr):
-    return _native_call("llvm.amdgcn.ds.swizzle", "i32", ("i32", "#i32"),
-                        (value, pattern), True)
+    return _native_call(
+        "llvm.amdgcn.ds.swizzle", "i32", ("i32", "#i32"), (value, pattern), True
+    )
 
 
 @g.jit
@@ -614,13 +695,19 @@ def amdgcn_ballot(predicate):
 
 @g.jit
 def amdgcn_ctz64(value):
-    return _native_call("llvm.cttz.i64", "i64", ("i64", "#i1"), (value, True), True).to(l.uint32)
+    return _native_call("llvm.cttz.i64", "i64", ("i64", "#i1"), (value, True), True).to(
+        l.uint32
+    )
 
 
 @g.jit
 def amdgcn_thread_id(reference):
     if reference.type.is_block():
-        return l.arange(0, l.num_warps() * 64, layout=l.BlockedLayout([1], [64], [l.num_warps()], [0])).to(l.uint32)
+        return l.arange(
+            0,
+            l.num_warps() * 64,
+            layout=l.BlockedLayout([1], [64], [l.num_warps()], [0]),
+        ).to(l.uint32)
     else:
         return _native_call("llvm.amdgcn.workitem.id.x", "i32", (), (), True)
 
@@ -630,7 +717,9 @@ def amdgcn_shuffle(value, source_lane, width: l.constexpr = 64):
     # HIP __shfl operates inside the caller's width-sized lane subgroup.
     lane = amdgcn_thread_id(value) % 64
     source = (lane // width) * width + source_lane % width
-    return amdgcn_ds_bpermute(source * 4, value.to(l.uint32, bitcast=True)).to(value.dtype, bitcast=True)
+    return amdgcn_ds_bpermute(source * 4, value.to(l.uint32, bitcast=True)).to(
+        value.dtype, bitcast=True
+    )
 
 
 @g.jit
@@ -642,7 +731,11 @@ def amdgcn_cvt_pk_bf16_f32(a, b):
 @builtin
 def _uninitialized_like(value, dtype, _semantic):
     dtype = _unwrap_if_constexpr(dtype)
-    ty = distributed_type(dtype, value.type.shape, value.type.layout) if value.type.is_block() else dtype
+    ty = (
+        distributed_type(dtype, value.type.shape, value.type.layout)
+        if value.type.is_block()
+        else dtype
+    )
     return l.tensor(_semantic.builder.create_poison(ty.to_ir(_semantic.builder)), ty)
 
 
@@ -663,12 +756,23 @@ def _resource_content(resource):
     else:
         assert len(resource) == 3
         ptr = resource[0].to(l.uint64)
-        ptr_lo = _native_call('llvm.amdgcn.readfirstlane', 'i32', ('i32',),
-                              (ptr.to(l.uint32),), True)
-        ptr_hi = _native_call('llvm.amdgcn.readfirstlane', 'i32', ('i32',),
-                              ((ptr >> 32).to(l.uint32),), True)
-        byte_range = _native_call('llvm.amdgcn.readfirstlane', 'i32', ('i32',),
-                                  ((l.full((), 0, l.uint32) + resource[1]).to(l.uint32),), True)
+        ptr_lo = _native_call(
+            "llvm.amdgcn.readfirstlane", "i32", ("i32",), (ptr.to(l.uint32),), True
+        )
+        ptr_hi = _native_call(
+            "llvm.amdgcn.readfirstlane",
+            "i32",
+            ("i32",),
+            ((ptr >> 32).to(l.uint32),),
+            True,
+        )
+        byte_range = _native_call(
+            "llvm.amdgcn.readfirstlane",
+            "i32",
+            ("i32",),
+            ((l.full((), 0, l.uint32) + resource[1]).to(l.uint32),),
+            True,
+        )
         content = (
             ptr_lo,
             ptr_hi,
@@ -676,6 +780,8 @@ def _resource_content(resource):
             (l.full((), 0, l.uint32) + resource[2]).to(l.uint32),
         )
     return content
+
+
 @g.jit
 def _pack_uint2(a):
     return a[0].to(l.uint32).to(l.uint64) | (a[1].to(l.uint32).to(l.uint64) << 32)
@@ -705,9 +811,7 @@ def _packed_mfma(kind: l.constexpr, fa, fb, c):
             + (
                 "fp8.fp8"
                 if kind == "fp8_fp8"
-                else "bf8.fp8"
-                if kind == "bf8_fp8"
-                else "fp8.bf8"
+                else "bf8.fp8" if kind == "bf8_fp8" else "fp8.bf8"
             ),
             "v4f32",
             ("i64", "i64", "v4f32", "#i32", "#i32", "#i32"),
@@ -808,7 +912,12 @@ def _llvm_type(code):
     if re.fullmatch(r"p[0-9]+", code):
         space = int(code[1:])
         bits = 32 if space in (3, 5) else 64
-        return f"ptr addrspace({space})", l.uint32 if bits == 32 else l.uint64, 1, f"i{bits}"
+        return (
+            f"ptr addrspace({space})",
+            l.uint32 if bits == 32 else l.uint64,
+            1,
+            f"i{bits}",
+        )
     ir, dtype = scalars[code]
     return ir, dtype, 1, ir
 
@@ -868,10 +977,16 @@ def _native_adapter(intrinsic, result, signature, immediates):
         setup.extend([f"br i1 {predicate}, label %active, label %done", "active:"])
     if intrinsic == "memory.shared.i32":
         words, alignment = int(immediates[0]), int(immediates[1])
-        declarations.append(f'@petit_shared_{words}_{alignment} = internal addrspace(3) global [{words} x i32] undef, align {alignment}')
-        setup.append(f'%result = ptrtoint ptr addrspace(3) @petit_shared_{words}_{alignment} to i32')
+        declarations.append(
+            f"@petit_shared_{words}_{alignment} = internal addrspace(3) global [{words} x i32] undef, align {alignment}"
+        )
+        setup.append(
+            f"%result = ptrtoint ptr addrspace(3) @petit_shared_{words}_{alignment} to i32"
+        )
     elif intrinsic.startswith("memory.atomic.add."):
-        setup.append(f'%result = atomicrmw add {operands[0]}, {operands[1]} syncscope("agent") monotonic')
+        setup.append(
+            f'%result = atomicrmw add {operands[0]}, {operands[1]} syncscope("agent") monotonic'
+        )
     elif intrinsic.startswith("memory.load."):
         _, dtype, elements, _ = _llvm_type(result)
         alignment = max(1, dtype.primitive_bitwidth * elements // 8)
@@ -879,8 +994,12 @@ def _native_adapter(intrinsic, result, signature, immediates):
             alignment = int(immediates[1])
         setup.append(f"%result = load {result_ir}, {operands[0]}, align {alignment}")
     elif intrinsic == "memory.store.element.i16":
-        setup.append(f'%element = getelementptr inbounds i16, {operands[0]}, {operands[1]}')
-        setup.append(f'store {operands[2]}, ptr addrspace(3) %element, align {int(immediates[3])}')
+        setup.append(
+            f"%element = getelementptr inbounds i16, {operands[0]}, {operands[1]}"
+        )
+        setup.append(
+            f"store {operands[2]}, ptr addrspace(3) %element, align {int(immediates[3])}"
+        )
     elif intrinsic.startswith("memory.store."):
         value_code = signature[1]
         _, dtype, elements, _ = _llvm_type(value_code)
@@ -893,7 +1012,11 @@ def _native_adapter(intrinsic, result, signature, immediates):
         syncscope = ' syncscope("agent")' if scope == "agent" else ""
         setup.append(f"fence{syncscope} {ordering}")
     elif intrinsic == "buffer.atomic.pk.add.bf16":
-        setup.append('call void asm sideeffect "buffer_atomic_pk_add_bf16 $2, $1, $0, 0 offen", "s,v,v,~{memory}"(' + ', '.join(operands) + ')')
+        setup.append(
+            'call void asm sideeffect "buffer_atomic_pk_add_bf16 $2, $1, $0, 0 offen", "s,v,v,~{memory}"('
+            + ", ".join(operands)
+            + ")"
+        )
     elif intrinsic == "compiler.memory.barrier":
         setup.append('call void asm sideeffect "", "~{memory}"()')
     elif intrinsic == "buffer.wbl2.sc0.sc1":
@@ -905,9 +1028,7 @@ def _native_adapter(intrinsic, result, signature, immediates):
         constraints = (
             "=v,v,v"
             if op in ("v_pk_add_i16", "v_cvt_pk_bf16_f32")
-            else "=v,v,v,v"
-            if op.endswith(".vector")
-            else "=v,v,v,r"
+            else "=v,v,v,v" if op.endswith(".vector") else "=v,v,v,r"
         )
         op = op.removesuffix(".vector")
         registers = ", ".join(f"${i}" for i in range(len(operands) + 1))
@@ -933,12 +1054,22 @@ def _native_adapter(intrinsic, result, signature, immediates):
         if guarded:
             setup.extend(["br label %done", "done:"])
         setup.append("ret i32 0")
-    key = sha256(repr((guarded, intrinsic, result, signature, immediates)).encode()).hexdigest()
+    key = sha256(
+        repr((guarded, intrinsic, result, signature, immediates)).encode()
+    ).hexdigest()
     library = "petit_native_" + key
     symbol = library + "_call"
     convergent = any(
         s in intrinsic
-        for s in ("asm.", "mfma.", "ds.", "mov.dpp", "readfirstlane", "barrier", "ballot")
+        for s in (
+            "asm.",
+            "mfma.",
+            "ds.",
+            "mov.dpp",
+            "readfirstlane",
+            "barrier",
+            "ballot",
+        )
     )
     source = "\n".join(
         [
@@ -1012,22 +1143,28 @@ def _native_call(intrinsic, result, signature, args, pure, _semantic):
 def _native_load_scalar(ptr, alignment=None, _semantic=None):
     """A scalar native dereference, without a one-element LLVM vector wrapper."""
     dtype = ptr.dtype.element_ty
-    code = 'f32' if dtype == l.float32 else 'i' + str(dtype.primitive_bitwidth)
-    signature = ('p' + str(_unwrap_if_constexpr(ptr.dtype.address_space)),)
+    code = "f32" if dtype == l.float32 else "i" + str(dtype.primitive_bitwidth)
+    signature = ("p" + str(_unwrap_if_constexpr(ptr.dtype.address_space)),)
     args = (ptr,)
     if _unwrap_if_constexpr(alignment) is not None:
-        signature += ('#i32',)
+        signature += ("#i32",)
         args += (alignment,)
-    value = _native_call('memory.load.' + code, code, signature,
-                        args, False, _semantic=_semantic)
+    value = _native_call(
+        "memory.load." + code, code, signature, args, False, _semantic=_semantic
+    )
     return _semantic.bitcast(value, dtype)
 
 
 @g.jit
 def _native_shared_memory(words: l.constexpr, alignment: l.constexpr = 16):
     """One native static shared allocation per kernel, retaining its LLVM base."""
-    return _native_call('memory.shared.i32', 'i32', ('#i32', '#i32'),
-                        (words, alignment), False).to(l.uint64).to(l.pointer_type(l.uint32, 3))
+    return (
+        _native_call(
+            "memory.shared.i32", "i32", ("#i32", "#i32"), (words, alignment), False
+        )
+        .to(l.uint64)
+        .to(l.pointer_type(l.uint32, 3))
+    )
 
 
 @builtin
@@ -1035,11 +1172,16 @@ def _native_load_vector4(ptr, _semantic):
     """Native aligned uint4/float4 dereference, retaining its LLVM vector type."""
     dtype = ptr.dtype.element_ty
     if dtype not in (l.uint32, l.float32):
-        raise TypeError('Native vector4 access requires uint32 or float32 elements')
-    code = 'v4f32' if dtype == l.float32 else 'v4i32'
-    return _native_call('memory.load.' + code, code,
-                        ('p' + str(_unwrap_if_constexpr(ptr.dtype.address_space)),),
-                        (ptr,), False, _semantic=_semantic)
+        raise TypeError("Native vector4 access requires uint32 or float32 elements")
+    code = "v4f32" if dtype == l.float32 else "v4i32"
+    return _native_call(
+        "memory.load." + code,
+        code,
+        ("p" + str(_unwrap_if_constexpr(ptr.dtype.address_space)),),
+        (ptr,),
+        False,
+        _semantic=_semantic,
+    )
 
 
 @builtin
@@ -1047,25 +1189,37 @@ def _native_store_vector4(ptr, value, _semantic):
     """Native aligned uint4/float4 assignment; ptr addresses a 16-byte element."""
     dtype = ptr.dtype.element_ty
     if dtype not in (l.uint32, l.float32):
-        raise TypeError('Native vector4 access requires uint32 or float32 elements')
-    code = 'v4f32' if dtype == l.float32 else 'v4i32'
-    return _native_call('memory.store.' + code, 'void',
-                        ('p' + str(_unwrap_if_constexpr(ptr.dtype.address_space)), code),
-                        (ptr, value), False, _semantic=_semantic)
+        raise TypeError("Native vector4 access requires uint32 or float32 elements")
+    code = "v4f32" if dtype == l.float32 else "v4i32"
+    return _native_call(
+        "memory.store." + code,
+        "void",
+        ("p" + str(_unwrap_if_constexpr(ptr.dtype.address_space)), code),
+        (ptr, value),
+        False,
+        _semantic=_semantic,
+    )
 
 
 @builtin
 def _native_load_uint2(ptr, _semantic):
     """Native aligned uint2 LDS dereference."""
-    return _native_call('memory.load.v2i32', 'v2i32', ('p3',),
-                        (ptr,), False, _semantic=_semantic)
+    return _native_call(
+        "memory.load.v2i32", "v2i32", ("p3",), (ptr,), False, _semantic=_semantic
+    )
 
 
 @builtin
 def _native_store_uint2(ptr, value, _semantic):
     """Native aligned uint2 LDS assignment."""
-    return _native_call('memory.store.v2i32', 'void', ('p3', 'v2i32'),
-                        (ptr, value), False, _semantic=_semantic)
+    return _native_call(
+        "memory.store.v2i32",
+        "void",
+        ("p3", "v2i32"),
+        (ptr, value),
+        False,
+        _semantic=_semantic,
+    )
 
 
 @g.jit
@@ -1076,10 +1230,13 @@ def _native_store_ushort_component(array, index, value, component: l.constexpr):
     gets from Shm::output without changing the component loop.
     """
     alignment: l.constexpr = 8 if component == 0 else 4 if component == 2 else 2
-    _native_call('memory.store.element.i16', 'void', ('p3', 'i32', 'i16', '#i32'),
-                 (array, index, value, alignment), False)
-
-
+    _native_call(
+        "memory.store.element.i16",
+        "void",
+        ("p3", "i32", "i16", "#i32"),
+        (array, index, value, alignment),
+        False,
+    )
 
 
 def _install_native_library_linker():

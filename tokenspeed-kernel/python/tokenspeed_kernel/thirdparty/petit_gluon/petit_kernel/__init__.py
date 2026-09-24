@@ -1,23 +1,14 @@
 """Gluon implementation of the current native MegaMoE and two-stage APIs."""
+
 import enum
-
-
 import functools
-
-
 import os
-
-
 from dataclasses import dataclass, field
-
 
 import torch
 
-
-from tokenspeed_kernel.thirdparty.petit_gluon.petit_kernel import ops
-
-
-from tokenspeed_kernel.thirdparty.petit_gluon.petit_kernel.moe_mxfp4 import (
+from . import ops
+from .moe_mxfp4 import (
     MoeKernelLayout,
     repack_moe_kernel_layout,
 )
@@ -358,9 +349,7 @@ class MegaMoeConfig:
     topk: int
     model_dim: int
     activation: MegaMoeActivation
-    activation_function: MegaMoeActivationFunction = (
-        MegaMoeActivationFunction.swiglu
-    )
+    activation_function: MegaMoeActivationFunction = MegaMoeActivationFunction.swiglu
     stages: MegaMoeStages = MegaMoeStages.two_stage
     inter_dim: int = 3072
     has_bias: bool = True
@@ -414,9 +403,12 @@ class MegaMoeConfig:
             and not self.has_bias
         )
         kimi_config = (
-            self.world_size == 8 and self.num_experts == 896
-            and self.topk == 16 and self.model_dim == 3584
-            and self.inter_dim == 3072 and not self.has_bias
+            self.world_size == 8
+            and self.num_experts == 896
+            and self.topk == 16
+            and self.model_dim == 3584
+            and self.inter_dim == 3072
+            and not self.has_bias
             and activation_function is MegaMoeActivationFunction.kimi_situ
         )
         supported = (
@@ -430,9 +422,11 @@ class MegaMoeConfig:
             self,
             "_solution_id",
             _make_mega_moe_solution_id(
-                _FusedMoeDataType.bf16
-                if activation is MegaMoeActivation.bf16
-                else _FusedMoeDataType.mxfp4,
+                (
+                    _FusedMoeDataType.bf16
+                    if activation is MegaMoeActivation.bf16
+                    else _FusedMoeDataType.mxfp4
+                ),
                 self.world_size,
                 self.num_experts,
                 self.topk,
@@ -444,9 +438,11 @@ class MegaMoeConfig:
                 activation_function=(
                     _FusedMoeActivationFunction.silu_dot
                     if activation_function is MegaMoeActivationFunction.silu
-                    else _FusedMoeActivationFunction.kimi_situ
-                    if activation_function is MegaMoeActivationFunction.kimi_situ
-                    else _FusedMoeActivationFunction.openai_swiglu
+                    else (
+                        _FusedMoeActivationFunction.kimi_situ
+                        if activation_function is MegaMoeActivationFunction.kimi_situ
+                        else _FusedMoeActivationFunction.openai_swiglu
+                    )
                 ),
                 has_bias=self.has_bias,
             ),
@@ -468,10 +464,8 @@ class MegaMoeConfig:
         max_tokens = int(max_tokens)
         if max_tokens <= 0 or max_tokens > self.max_tokens_per_rank:
             raise ValueError("invalid MegaMoE token capacity")
-        tokens, scales, expert_ids, expert_weights = (
-            ops.mega_moe_workspace_input_views(
-                heap, max_tokens, self._solution_id
-            )
+        tokens, scales, expert_ids, expert_weights = ops.mega_moe_workspace_input_views(
+            heap, max_tokens, self._solution_id
         )
         return MegaMoeInputViews(
             tokens,
@@ -636,35 +630,31 @@ _FUSED_MOE_TWO_STAGE_MXFP4_BIAS_M64_N512_SOLUTION_ID = (
 )
 
 
-_FUSED_MOE_TWO_STAGE_MXFP4_SILU_7168X2048_SOLUTION_ID = (
-    _make_fused_moe_solution_id(
-        _FusedMoeDataType.mxfp4,
-        _FusedMoeDataType.mxfp4,
-        _FusedMoeDataType.none,
-        _FusedMoeWeightOrdering.native_mxfp4,
-        _FusedMoeMfmaShape.mfma_scale_fp4_mxfp4,
-        _FusedMoeStages.two_stage,
-        _FusedMoeActivationFunction.silu_dot,
-        _FusedMoeStage1Buffering.double_buffer,
-        7168,
-        2048,
-    )
+_FUSED_MOE_TWO_STAGE_MXFP4_SILU_7168X2048_SOLUTION_ID = _make_fused_moe_solution_id(
+    _FusedMoeDataType.mxfp4,
+    _FusedMoeDataType.mxfp4,
+    _FusedMoeDataType.none,
+    _FusedMoeWeightOrdering.native_mxfp4,
+    _FusedMoeMfmaShape.mfma_scale_fp4_mxfp4,
+    _FusedMoeStages.two_stage,
+    _FusedMoeActivationFunction.silu_dot,
+    _FusedMoeStage1Buffering.double_buffer,
+    7168,
+    2048,
 )
 
 
-_FUSED_MOE_TWO_STAGE_MXFP4_SILU_7168X3072_SOLUTION_ID = (
-    _make_fused_moe_solution_id(
-        _FusedMoeDataType.mxfp4,
-        _FusedMoeDataType.mxfp4,
-        _FusedMoeDataType.none,
-        _FusedMoeWeightOrdering.native_mxfp4,
-        _FusedMoeMfmaShape.mfma_scale_fp4_mxfp4,
-        _FusedMoeStages.two_stage,
-        _FusedMoeActivationFunction.silu_dot,
-        _FusedMoeStage1Buffering.double_buffer,
-        7168,
-        3072,
-    )
+_FUSED_MOE_TWO_STAGE_MXFP4_SILU_7168X3072_SOLUTION_ID = _make_fused_moe_solution_id(
+    _FusedMoeDataType.mxfp4,
+    _FusedMoeDataType.mxfp4,
+    _FusedMoeDataType.none,
+    _FusedMoeWeightOrdering.native_mxfp4,
+    _FusedMoeMfmaShape.mfma_scale_fp4_mxfp4,
+    _FusedMoeStages.two_stage,
+    _FusedMoeActivationFunction.silu_dot,
+    _FusedMoeStage1Buffering.double_buffer,
+    7168,
+    3072,
 )
 
 
@@ -673,20 +663,12 @@ _FUSED_MOE_TWO_STAGE_PROFILES = {
     # Current vLLM runs the eight routed DeepSeek-V3 experts here and
     # evaluates the shared expert separately.  Keep the nine-route entry for
     # integrations that fuse the shared expert into this invocation.
-    (7168, 2048, 8, "silu"): (
-        _FUSED_MOE_TWO_STAGE_MXFP4_SILU_7168X2048_SOLUTION_ID
-    ),
-    (7168, 2048, 9, "silu"): (
-        _FUSED_MOE_TWO_STAGE_MXFP4_SILU_7168X2048_SOLUTION_ID
-    ),
+    (7168, 2048, 8, "silu"): (_FUSED_MOE_TWO_STAGE_MXFP4_SILU_7168X2048_SOLUTION_ID),
+    (7168, 2048, 9, "silu"): (_FUSED_MOE_TWO_STAGE_MXFP4_SILU_7168X2048_SOLUTION_ID),
     # DeepSeek-V4 exposes six routed experts to vLLM. The seven-route shape
     # below is used when the shared expert is fused into the MoE invocation.
-    (7168, 3072, 6, "silu"): (
-        _FUSED_MOE_TWO_STAGE_MXFP4_SILU_7168X3072_SOLUTION_ID
-    ),
-    (7168, 3072, 7, "silu"): (
-        _FUSED_MOE_TWO_STAGE_MXFP4_SILU_7168X3072_SOLUTION_ID
-    ),
+    (7168, 3072, 6, "silu"): (_FUSED_MOE_TWO_STAGE_MXFP4_SILU_7168X3072_SOLUTION_ID),
+    (7168, 3072, 7, "silu"): (_FUSED_MOE_TWO_STAGE_MXFP4_SILU_7168X3072_SOLUTION_ID),
 }
 
 
@@ -728,12 +710,16 @@ class Moe2StageConfig:
         scale_cols = ((self.inter_dim // 32 + 7) // 8) * 8
         fp4_dtype = getattr(torch, "float4_e2m1fn_x2", torch.uint8)
         e8m0_dtype = getattr(torch, "float8_e8m0fnu", torch.uint8)
-        payload = intermediate[:payload_bytes].view(fp4_dtype).view(
-            self.token, self.topk, self.inter_dim // 2
+        payload = (
+            intermediate[:payload_bytes]
+            .view(fp4_dtype)
+            .view(self.token, self.topk, self.inter_dim // 2)
         )
-        scales = intermediate[
-            payload_capacity : payload_capacity + scale_rows * scale_cols
-        ].view(e8m0_dtype).view(scale_rows, scale_cols)
+        scales = (
+            intermediate[payload_capacity : payload_capacity + scale_rows * scale_cols]
+            .view(e8m0_dtype)
+            .view(scale_rows, scale_cols)
+        )
         return payload, scales
 
     def stage1(

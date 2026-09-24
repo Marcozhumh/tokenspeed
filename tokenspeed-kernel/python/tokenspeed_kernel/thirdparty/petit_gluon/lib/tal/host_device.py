@@ -3,6 +3,7 @@
 Host calls evaluate Python integers. Device calls inline the same function's
 Gluon JIT body, with the layout/configuration object as a constexpr argument.
 """
+
 import triton.experimental.gluon as g
 from triton.experimental.gluon import language as l
 from triton.experimental.gluon.language._core import _unwrap_if_constexpr
@@ -33,9 +34,12 @@ class _BoundHostDevice:
 
     def __call__(self, *args, _semantic=None, _generator=None, **kwargs):
         if _generator is None:
-            return self.method.fn(self.obj, *args, **kwargs) & 0xffffffff
-        from tokenspeed_kernel.thirdparty.petit_gluon.lib.tal.device import _CompileTimeView
-        result = _generator.call_JitFunction(self.method.jit, [l.constexpr(_CompileTimeView(self.obj)), *args], kwargs)
+            return self.method.fn(self.obj, *args, **kwargs) & 0xFFFFFFFF
+        from lib.tal.device import _CompileTimeView
+
+        result = _generator.call_JitFunction(
+            self.method.jit, [l.constexpr(_CompileTimeView(self.obj)), *args], kwargs
+        )
         if isinstance(result, l.tensor):
             return _semantic.cast(result, l.uint32)
-        return l.constexpr(_unwrap_if_constexpr(result) & 0xffffffff)
+        return l.constexpr(_unwrap_if_constexpr(result) & 0xFFFFFFFF)
