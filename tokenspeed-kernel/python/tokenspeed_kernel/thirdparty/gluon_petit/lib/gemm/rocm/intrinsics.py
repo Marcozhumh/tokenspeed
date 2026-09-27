@@ -42,6 +42,7 @@ from triton.experimental.gluon.language._core import (
     builtin,
     distributed_type,
 )
+from triton.experimental.gluon.language.extra import libdevice
 from triton.runtime.cache import get_cache_manager
 
 # This port targets gfx950. Match the native device-compilation capability flags.
@@ -158,7 +159,8 @@ def amdgcn_pk_add_f32(a, b):
 
 @g.jit
 def amdgcn_exp2f(x):
-    return _native_call("llvm.amdgcn.exp2.f32", "f32", ("f32",), (x,), True)
+    # Gluon preserves the native instruction; libdevice.exp2 changes codegen.
+    return l.exp2(l.cast(x, l.float32))
 
 
 @g.jit
@@ -410,7 +412,8 @@ def amdgcn_mov_dpp(
 
 @g.jit
 def amdgcn_rcpf(x):
-    return _native_call("llvm.amdgcn.rcp.f32", "f32", ("f32",), (x,), True)
+    # A unit numerator preserves the native reciprocal, unlike general fdiv.
+    return libdevice.fast_dividef(1.0, l.cast(x, l.float32))
 
 
 @g.jit
