@@ -1,4 +1,10 @@
-"""Native grid and cross-rank barriers, called in a per-thread Gluon body."""
+"""Memory ordering and collective barriers for per-thread Gluon bodies.
+
+Agent scope covers one GPU; system scope includes peer GPUs. Fences order
+memory accesses but do not make other threads arrive at a barrier. Signal
+offsets are byte offsets in the peer-visible workspace buffer. Callers must
+initialize control words before use and serialize reuse of each barrier slot.
+"""
 
 import triton.experimental.gluon as g
 from lib.gemm.rocm.amd_intrinsics import (
@@ -13,41 +19,64 @@ from triton.experimental.gluon import language as l
 
 @g.jit
 def agent_fence_release():
+    """Order earlier memory accesses before a following publication on this GPU."""
     _native_call("fence.release.agent", "void", (), (), False)
 
 
 @g.jit
 def agent_fence_acquire():
+    """Order later memory accesses after an observed publication on this GPU."""
     _native_call("fence.acquire.agent", "void", (), (), False)
 
 
 @g.jit
 def system_fence_release():
+    """Order earlier memory accesses before a following publication to peer GPUs."""
     _native_call("fence.release.system", "void", (), (), False)
 
 
 @g.jit
 def system_fence_acquire():
+    """Order later payload accesses after observing a peer's release publication."""
     _native_call("fence.acquire.system", "void", (), (), False)
 
 
 @g.jit
 def wave_barrier():
+    """Synchronize participating lanes within one wave, not other waves or CTAs.
+
+    This is the LLVM wave barrier; payload memory ordering is handled separately.
+    """
     _native_call("llvm.amdgcn.wave.barrier", "void", (), (), False)
 
 
 @g.jit
 def buffer_wbl2_sc0_sc1():
+    """Issue an L2 writeback with SC0/SC1 cache controls.
+
+    This emits ``buffer_wbl2 sc0 sc1`` without an accompanying wait or collective
+    barrier; callers supply completion and synchronization as required.
+    """
     _native_call("buffer.wbl2.sc0.sc1", "void", (), (), False)
 
 
 @g.jit
 def compiler_memory_barrier():
+    """Prevent compiler movement of memory accesses across this point.
+
+    Emits an empty side-effecting assembly block with a memory clobber, without
+    a hardware fence or wait instruction.
+    """
     _native_call("compiler.memory.barrier", "void", (), (), False)
 
 
 @g.jit
 def complete_scoped_vmem():
+    """Wait for this wave's VMEM counter to reach zero, with compiler barriers.
+
+    Only VMEM is explicitly drained; this does not wait for other waves or replace
+    an acquire/release fence when publishing or consuming a payload.
+    """
     compiler_memory_barrier()
     amdgcn_s_waitcnt(0)
     compiler_memory_barrier()
@@ -55,6 +84,11 @@ def complete_scoped_vmem():
 
 @g.jit
 def store_xgpu_epoch_relaxed(workspace, signal_offset, epoch):
+    """Store a 32-bit epoch at the byte offset using SC0/SC1 cache controls.
+
+    No release fence is issued; callers must arrange ordering of prior payload
+    writes before publishing this signal.
+    """
     BufferResource.StoreU32(
         workspace.br_,
         signal_offset,
@@ -66,12 +100,23 @@ def store_xgpu_epoch_relaxed(workspace, signal_offset, epoch):
 
 @g.jit
 def store_xgpu_epoch_release(workspace, signal_offset, epoch):
+    """Publish a 32-bit epoch after a system-scope release fence.
+
+    The consumer must observe the epoch and perform the required acquire before
+    reading its payload. This helper does not wait for the consumer.
+    """
     system_fence_release()
     store_xgpu_epoch_relaxed(workspace, signal_offset, epoch)
 
 
 @g.jit
 def wait_xgpu_signal(workspace, signal_offset, target, kProfile: l.constexpr = False):
+    """Poll a signal, interpreted as signed int32, until it equals ``target``.
+
+    Uses the system-scope buffer control without an acquire fence on return.
+    With ``kProfile``, a wait lasting 600 billion device cycles triggers debugtrap;
+    otherwise it has no timeout. The producer must not skip the target value.
+    """
     kNumTimeoutCycles: l.constexpr = 300 * 2000000000
     start_clock = l.full((), 0, l.uint64)
     if kProfile:
@@ -93,6 +138,11 @@ def wait_xgpu_signal(workspace, signal_offset, target, kProfile: l.constexpr = F
 
 @g.jit
 def wait_xgpu_signal_relaxed(workspace, signal_offset, target):
+    """Wait for exact signed-int32 equality using SC0/SC1 buffer loads.
+
+    Each poll includes a compiler memory barrier. There is no payload acquire
+    or timeout; the producer must not skip the target value.
+    """
     pending = l.full((), True, l.int1)
     while pending:
         compiler_memory_barrier()
@@ -107,6 +157,12 @@ def wait_xgpu_signal_relaxed(workspace, signal_offset, target):
 
 @g.jit
 def wait_xgpu_epoch_relaxed(workspace, signal_offset, expected):
+    """Poll until a wrapping uint32 epoch reaches or passes ``expected``.
+
+    Signed subtraction tolerates wraparound when epochs differ by less than
+    2**31. Polls use SC0/SC1 loads and compiler barriers, with no payload acquire
+    or timeout.
+    """
     pending = l.full((), True, l.int1)
     while pending:
         compiler_memory_barrier()
@@ -121,11 +177,22 @@ def wait_xgpu_epoch_relaxed(workspace, signal_offset, expected):
 
 @g.jit
 def xgpu_epoch_reached(observed, expected):
+    """Return whether ``observed`` is at least ``expected`` in uint32 epoch order.
+
+    The signed difference handles wraparound; epochs must be less than 2**31
+    steps apart for the comparison to be unambiguous.
+    """
     return (observed - expected).to(l.int32) >= 0
 
 
 @g.jit
 def wait_xgpu_epoch(workspace, signal_offset, expected, kProfile: l.constexpr = False):
+    """Wait for a wrapping epoch to reach ``expected``, without acquiring payload.
+
+    Uses SC0/SC1 loads and the same half-range rule as ``xgpu_epoch_reached``.
+    ``kProfile`` enables a debugtrap after 600 billion cycles still pending;
+    the normal path waits indefinitely.
+    """
     kNumTimeoutCycles: l.constexpr = 300 * 2000000000
     start_clock = l.full((), 0, l.uint64)
     if kProfile:
@@ -161,6 +228,17 @@ def grid_sync(
     kAcquirePayload: l.constexpr = True,
     kSystemScope: l.constexpr = False,
 ):
+    """Synchronize the participating CTAs on one GPU through a reusable counter.
+
+    All ``kNumSMs`` CTAs must enter in the same order with unique ``sm_idx`` values
+    from zero and a common slot index. They must be able to make progress together
+    while spinning. ``sync_scope`` synchronizes each CTA's participating threads
+    before and after thread zero signals arrival and waits for the phase bit.
+
+    ``kSystemScope`` selects system rather than agent release/atomic scope.
+    ``kAcquirePayload`` adds the matching acquire after arrival; otherwise only
+    a compiler barrier follows the wait. A single CTA only calls ``sync_scope``.
+    """
     if kNumSMs == 1:
         sync_scope()
         return
@@ -230,6 +308,20 @@ def xgpu_barrier(
     sync_prologue=True,
     sync_epilogue=True,
 ):
+    """Join ranks through phase counters, optionally joining each local grid.
+
+    The first wave of CTA zero sends one atomic arrival to each rank; lane zero
+    waits for all arrivals and acquires at system scope. Two signal slots alternate
+    between incrementing to ``kNumRanks`` and decrementing to zero for reuse.
+    Ranks must call in the same order, and peer-signaling lanes must fit in the
+    first 64-lane wave as well as ``kNumThreads``.
+
+    Prologue/epilogue grid barriers gather local producers and release local
+    consumers; disabling either requires the caller to provide that ordering.
+    Their acquire flags control local payload acquisition, not the peer acquire.
+    For one rank only the requested local synchronization runs. ``kProfile``
+    enables the debugtrap in the peer wait.
+    """
     l.static_assert(kNumRanks <= kNumThreads)
     if sync_prologue:
         grid_sync(
@@ -307,7 +399,10 @@ def xgpu_barrier(
 
 
 class LegacyXGpuSync(DeviceTemplate):
+    """Split a local-grid arrival and a counter-based peer barrier into two calls."""
+
     def __init__(self, Config, Workspace):
+        """Bind compile-time grid/rank sizes and the workspace control layout."""
         self._key = (Config.cache_key, Workspace.cache_key)
         self.kNumSMs, self.kNumRanks, self.kThreads = (
             Config.kNumSMs,
@@ -326,6 +421,11 @@ class LegacyXGpuSync(DeviceTemplate):
         kPrologueGridSyncIndex: l.constexpr,
         kProfile: l.constexpr = False,
     ):
+        """Join the local grid without acquiring payload and return an empty ticket.
+
+        Every participating CTA calls this before ``Finish``. ``kProfile`` is accepted
+        for the shared interface but this local barrier has no profiling timeout.
+        """
         grid_sync(
             self.Workspace,
             workspace,
@@ -349,6 +449,12 @@ class LegacyXGpuSync(DeviceTemplate):
         kEpilogueGridSyncIndex: l.constexpr,
         kProfile: l.constexpr = False,
     ):
+        """Join peer ranks, acquire their payload, then release the local grid.
+
+        Uses ``Begin``'s ordering instead of another prologue grid barrier. ``ticket``
+        is unused; any work between Begin and Finish needing a grid join must be
+        synchronized by the caller before publication from CTA zero.
+        """
         xgpu_barrier(
             self.Workspace,
             workspace,
@@ -368,6 +474,8 @@ class LegacyXGpuSync(DeviceTemplate):
 
 
 class EpochXGpuSync(LegacyXGpuSync):
+    """Publish per-source epochs; each local CTA waits for every peer separately."""
+
     @device_method
     def Begin(
         self,
@@ -378,6 +486,11 @@ class EpochXGpuSync(LegacyXGpuSync):
         kPrologueGridSyncIndex: l.constexpr,
         kProfile: l.constexpr = False,
     ):
+        """Read the next local epoch, join the grid with acquire, and return it.
+
+        Only thread zero of each CTA receives the epoch ticket; ``Finish`` broadcasts
+        it within that CTA's first wave. Calls sharing the rank counter must be ordered.
+        """
         next_epoch = l.full((), 0, l.uint32)
         if thread_idx == 0:
             next_epoch = 1 + BufferResource.LoadU32(
@@ -409,6 +522,13 @@ class EpochXGpuSync(LegacyXGpuSync):
         kEpilogueGridSyncIndex: l.constexpr,
         kProfile: l.constexpr = False,
     ):
+        """Publish ``next_epoch`` from CTA zero and acquire every peer's epoch.
+
+        The first wave in every CTA polls one slot per peer, then ``sync_scope``
+        releases that CTA's threads. At most 64 ranks participate. There is no grid
+        barrier here: callers must order all local payload producers before CTA zero
+        publishes. ``kEpilogueGridSyncIndex`` is unused by this implementation.
+        """
         l.static_assert(self.kNumRanks <= 64)
         if thread_idx < 64:
             next_epoch = amdgcn_shuffle(next_epoch, 0)
