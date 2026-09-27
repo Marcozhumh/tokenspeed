@@ -257,7 +257,7 @@ class MoELayer(torch.nn.Module):
         if self._internal_activation_dtype_override is not None:
             internal_activation_dtype = self._internal_activation_dtype_override
 
-        if self._spec.use_petit_gluon:
+        if self._spec.use_gluon_petit:
             # Keep Petit hardware and expert constraints here; ServerArgs checks
             # shared backends, model dtype, and scheduling capacity.
             if not current_platform().is_cdna4:
@@ -308,7 +308,7 @@ class MoELayer(torch.nn.Module):
         # Preserve the legacy CLI name; weight dtype selects the MegaMoE implementation.
         if moe_backend == "deep_gemm_mega_moe":
             moe_backend = "mega_moe"
-        if moe_backend == "petit_gluon":
+        if moe_backend == "gluon_petit":
             moe_backend = "gluon"
         moe_backend = None if moe_backend == "auto" else moe_backend
         process_group = None

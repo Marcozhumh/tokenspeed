@@ -20,8 +20,8 @@ The HIP VMM binding is compiled on first use through
 
 The TokenSpeed adapter lives in `tokenspeed_kernel.ops.moe.gluon.petit` and
 registers this runtime as the `gluon` solution with `gluon_petit_*` function
-and kernel registration names. The serving options remain `--moe-backend petit_gluon`
-and `--all2all-backend petit_gluon`; the runtime maps the MoE backend to `gluon`
+and kernel registration names. The serving options are `--moe-backend gluon_petit`
+and `--all2all-backend gluon_petit`; the runtime maps the MoE backend to `gluon`
 when selecting a kernel plan.
 
 ## Integration status
@@ -36,8 +36,8 @@ compiler limitation.
 
 ## Runtime contract
 
-Select the backend with both `--moe-backend petit_gluon` and
-`--all2all-backend petit_gluon`. It requires one 8-GPU GFX950 node, EP8/TP1,
+Select the backend with both `--moe-backend gluon_petit` and
+`--all2all-backend gluon_petit`. It requires one 8-GPU GFX950 node, EP8/TP1,
 BF16 model activations, serialized MXFP4 expert weights, trivial expert
 placement, and no more than 1024 tokens per rank. The registered profiles are
 GPT-OSS 120B and DeepSeek V4. DeepSeek V4 uses Petit's unchanged unclamped

@@ -805,8 +805,8 @@ TORCH_NCCL_BLOCKING_WAIT=1 tokenspeed serve openai/gpt-oss-120b \
   --data-parallel-size 8 \
   --expert-parallel-size 8 \
   --dtype bfloat16 \
-  --moe-backend petit_gluon \
-  --all2all-backend petit_gluon \
+  --moe-backend gluon_petit \
+  --all2all-backend gluon_petit \
   --chunked-prefill-size 1024 \
   --max-prefill-tokens 1024 \
   --disable-autotune \
@@ -877,7 +877,7 @@ On eight gfx950 GPUs, DeepSeek V4 with serialized MXFP4 weights can use the
 topology and backend flags in the [Gluon Petit recipe](#gluon-petit-megamoe-on-amd-cdna4),
 alongside the V4 KV cache and indexer options. Petit ignores checkpoint
 activation clamps, which may affect accuracy; select it explicitly with
-`--moe-backend petit_gluon`.
+`--moe-backend gluon_petit`.
 
 **V4-Flash** — 2× MI350-series (gfx950), tensor-parallel + MTP:
 

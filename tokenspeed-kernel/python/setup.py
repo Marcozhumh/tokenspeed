@@ -1051,7 +1051,7 @@ setup(
             "csrc/include/*",
         ],
         # Petit Gluon compiles its small HIP VMM binding lazily on first use.
-        "tokenspeed_kernel.thirdparty.petit_gluon": [
+        "tokenspeed_kernel.thirdparty.gluon_petit": [
             "LICENSE.txt",
             "README.md",
             "lib/pybind/*.cc",

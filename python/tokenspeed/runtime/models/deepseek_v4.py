@@ -1693,11 +1693,11 @@ class DeepseekV4MoE(nn.Module):
             )
         moe_backend = get_moe_backend()
         self.use_mega_moe = moe_backend.is_mega_moe()
-        self.use_petit_gluon = moe_backend.is_petit_gluon()
-        self.owns_ep_communication = self.use_mega_moe or self.use_petit_gluon
+        self.use_gluon_petit = moe_backend.is_gluon_petit()
+        self.owns_ep_communication = self.use_mega_moe or self.use_gluon_petit
         # Petit's VMM-backed collective and auxiliary-stream shared experts do
         # not replay safely together. Keep both branches on the main stream.
-        self.stream_fork = StreamFork(None if self.use_petit_gluon else aux_stream)
+        self.stream_fork = StreamFork(None if self.use_gluon_petit else aux_stream)
         if mapping.moe.ep_size > 1:
             if global_server_args_dict.get("enable_eplb", False):
                 raise ValueError(
@@ -1760,7 +1760,7 @@ class DeepseekV4MoE(nn.Module):
                 # Normal EP sums routed and shared partials over the same TPxEP
                 # group. Fused MegaMoE paths return complete routed outputs and
                 # therefore keep the shared expert dense and local.
-                is_shared_expert=not (self.use_mega_moe or self.use_petit_gluon),
+                is_shared_expert=not (self.use_mega_moe or self.use_gluon_petit),
             )
         else:
             self.shared_experts = None
@@ -1925,7 +1925,7 @@ class DeepseekV4MoE(nn.Module):
         num_global_tokens: int,
         max_num_tokens_per_gpu: int,
     ) -> torch.Tensor:
-        if hidden_states.shape[0] == 0 and not self.use_petit_gluon:
+        if hidden_states.shape[0] == 0 and not self.use_gluon_petit:
             return hidden_states
         with nvtx_range("moe_select_experts"):
             topk_output = self._compute_topk_output(hidden_states, input_ids)
@@ -3193,7 +3193,7 @@ class DeepseekV4DecoderLayer(nn.Module):
     def _pre_mlp_input_ids_comm(
         self, input_ids: torch.Tensor, ctx: ForwardContext
     ) -> torch.Tensor:
-        if get_all2all_backend().is_petit_gluon():
+        if get_all2all_backend().is_gluon_petit():
             return input_ids
         if not self.mapping.moe.has_tp_ep:
             return input_ids

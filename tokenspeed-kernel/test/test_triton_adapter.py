@@ -14,7 +14,7 @@ def test_kernel_sources_use_tokenspeed_triton_adapter():
         source_root / "thirdparty/msa/cute/src/common/cute_dsl_utils.py",
     }
     stock_triton_roots = {
-        source_root / "thirdparty/petit_gluon",
+        source_root / "thirdparty/gluon_petit",
     }
     direct_imports = {}
 

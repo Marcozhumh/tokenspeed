@@ -44,7 +44,7 @@ def test_petit_plan_selects_gluon_registration(profile, mi350_platform) -> None:
             input_dtype=torch.bfloat16,
             activation="swiglu" if profile.has_bias else "silu",
             routing_mode="precomputed_topk",
-            a2a_backend="petit_gluon",
+            a2a_backend="gluon_petit",
             ep_size=8,
             ispp=profile.logical_intermediate,
             hidden=profile.model_dim,
@@ -60,7 +60,7 @@ def test_petit_plan_selects_gluon_registration(profile, mi350_platform) -> None:
     assert plan["solution"] == "gluon"
     assert plan["apply_kernel_name"] == "gluon_petit_mxfp4_megamoe_apply"
     assert plan["weight_preprocessor"] is gluon_petit_mxfp4_megamoe_weights
-    assert plan["a2a_backend"] == "petit_gluon"
+    assert plan["a2a_backend"] == "gluon_petit"
 
 
 def _gpt_oss_layer() -> SimpleNamespace:
@@ -203,11 +203,11 @@ def test_weight_preprocessor_repacks_and_releases_source_parameters() -> None:
     ):
         gluon_petit_mxfp4_megamoe_weights(plan={}, w=module)
 
-    assert module.petit_gluon_profile == profile
-    assert module.petit_gluon_w13_weight.shape == (2, 64, 256)
-    assert module.petit_gluon_w13_scale.shape == (2, 64, 16)
-    assert module.petit_gluon_w2_weight.shape == (2, 512, 16)
-    assert module.petit_gluon_w2_scale.shape == (2, 512, 1)
+    assert module.gluon_petit_profile == profile
+    assert module.gluon_petit_w13_weight.shape == (2, 64, 256)
+    assert module.gluon_petit_w13_scale.shape == (2, 64, 16)
+    assert module.gluon_petit_w2_weight.shape == (2, 512, 16)
+    assert module.gluon_petit_w2_scale.shape == (2, 512, 1)
     assert layouts == [native_layout, native_layout]
     for name in (
         "w13_weight",
@@ -238,13 +238,13 @@ def test_apply_keeps_zero_token_rank_in_collective() -> None:
     config.run.side_effect = lambda *args, **kwargs: kwargs["out"]
     workspace = SimpleNamespace(config=config, heap=object(), inputs=inputs)
     layer = SimpleNamespace(
-        petit_gluon_profile=profile,
-        petit_gluon_w13_weight=torch.empty(0),
-        petit_gluon_w2_weight=torch.empty(0),
-        petit_gluon_w13_scale=torch.empty(0),
-        petit_gluon_w2_scale=torch.empty(0),
-        petit_gluon_w13_bias=None,
-        petit_gluon_w2_bias=None,
+        gluon_petit_profile=profile,
+        gluon_petit_w13_weight=torch.empty(0),
+        gluon_petit_w2_weight=torch.empty(0),
+        gluon_petit_w13_scale=torch.empty(0),
+        gluon_petit_w2_scale=torch.empty(0),
+        gluon_petit_w13_bias=None,
+        gluon_petit_w2_bias=None,
     )
     overlap = mock.Mock()
     x = torch.empty((0, profile.model_dim), dtype=torch.bfloat16)

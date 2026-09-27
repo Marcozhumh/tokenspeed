@@ -128,17 +128,17 @@ def test_rocm_install_requires_exclude_cuda_dependencies(monkeypatch) -> None:
     }.isdisjoint(requirements)
 
 
-def test_petit_gluon_runtime_assets_are_packaged(monkeypatch) -> None:
+def test_gluon_petit_runtime_assets_are_packaged(monkeypatch) -> None:
     monkeypatch.chdir(SETUP_PY.parent)
     setup_kwargs = _capture_setup_kwargs(monkeypatch, "rocm")
 
     assert {
-        "tokenspeed_kernel.thirdparty.petit_gluon",
-        "tokenspeed_kernel.thirdparty.petit_gluon.lib.moe.rocm.mega_moe",
-        "tokenspeed_kernel.thirdparty.petit_gluon.lib.pybind",
-        "tokenspeed_kernel.thirdparty.petit_gluon.petit_kernel",
+        "tokenspeed_kernel.thirdparty.gluon_petit",
+        "tokenspeed_kernel.thirdparty.gluon_petit.lib.moe.rocm.mega_moe",
+        "tokenspeed_kernel.thirdparty.gluon_petit.lib.pybind",
+        "tokenspeed_kernel.thirdparty.gluon_petit.petit_kernel",
     } <= set(setup_kwargs["packages"])
-    assert setup_kwargs["package_data"]["tokenspeed_kernel.thirdparty.petit_gluon"] == [
+    assert setup_kwargs["package_data"]["tokenspeed_kernel.thirdparty.gluon_petit"] == [
         "LICENSE.txt",
         "README.md",
         "lib/pybind/*.cc",
@@ -196,14 +196,14 @@ def test_sdist_includes_requirements_and_python_sources(tmp_path, monkeypatch) -
     )
     expected_files.update(
         {
-            "tokenspeed_kernel/thirdparty/petit_gluon/LICENSE.txt",
-            "tokenspeed_kernel/thirdparty/petit_gluon/README.md",
-            "tokenspeed_kernel/thirdparty/petit_gluon/lib/pybind/bindings.cc",
-            "tokenspeed_kernel/thirdparty/petit_gluon/lib/pybind/pybind.h",
-            "tokenspeed_kernel/thirdparty/petit_gluon/lib/pybind/vmm_symmetric_heap.cc",
-            "tokenspeed_kernel/thirdparty/petit_gluon/lib/moe/rocm/mega_moe/"
+            "tokenspeed_kernel/thirdparty/gluon_petit/LICENSE.txt",
+            "tokenspeed_kernel/thirdparty/gluon_petit/README.md",
+            "tokenspeed_kernel/thirdparty/gluon_petit/lib/pybind/bindings.cc",
+            "tokenspeed_kernel/thirdparty/gluon_petit/lib/pybind/pybind.h",
+            "tokenspeed_kernel/thirdparty/gluon_petit/lib/pybind/vmm_symmetric_heap.cc",
+            "tokenspeed_kernel/thirdparty/gluon_petit/lib/moe/rocm/mega_moe/"
             "mega_moe_two_stage_kernel.py",
-            "tokenspeed_kernel/thirdparty/petit_gluon/petit_kernel/__init__.py",
+            "tokenspeed_kernel/thirdparty/gluon_petit/petit_kernel/__init__.py",
         }
     )
     assert expected_files <= archived_files

@@ -25,7 +25,7 @@ from pathlib import Path
 
 import pytest
 import torch
-from tokenspeed_kernel.thirdparty.petit_gluon import petit_kernel
+from tokenspeed_kernel.thirdparty.gluon_petit import petit_kernel
 
 mega_moe = importlib.import_module("lib.moe.rocm.mega_moe")
 

@@ -18,6 +18,7 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
+import argparse
 from contextlib import nullcontext
 from types import SimpleNamespace
 from unittest import mock
@@ -75,18 +76,37 @@ def _validation_args(
     )
 
 
-def test_petit_gluon_backend_enums() -> None:
-    assert All2AllBackend("petit_gluon").is_petit_gluon()
-    assert MoeBackend("petit_gluon").is_petit_gluon()
-    assert not MoeBackend("petit_gluon").is_mega_moe()
+def test_gluon_petit_backend_enums() -> None:
+    assert All2AllBackend("gluon_petit").is_gluon_petit()
+    assert MoeBackend("gluon_petit").is_gluon_petit()
+    assert not MoeBackend("gluon_petit").is_mega_moe()
 
 
-def test_petit_gluon_compiled_moe_owns_ep_communication() -> None:
+def test_gluon_petit_cli_backend_names() -> None:
+    parser = argparse.ArgumentParser()
+    ServerArgs.add_cli_args(parser)
+    args = parser.parse_args(
+        [
+            "openai/gpt-oss-120b",
+            "--moe-backend",
+            "gluon_petit",
+            "--draft-moe-backend",
+            "gluon_petit",
+            "--all2all-backend",
+            "gluon_petit",
+        ]
+    )
+    assert MoeBackend(args.moe_backend) is MoeBackend.GLUON_PETIT
+    assert MoeBackend(args.draft_moe_backend) is MoeBackend.GLUON_PETIT
+    assert All2AllBackend(args.all2all_backend) is All2AllBackend.GLUON_PETIT
+
+
+def test_gluon_petit_compiled_moe_owns_ep_communication() -> None:
     layer = CompiledMoEDecoderLayer.__new__(CompiledMoEDecoderLayer)
 
     with mock.patch(
         "tokenspeed.runtime.models.base.decoder_layer.get_all2all_backend",
-        return_value=All2AllBackend.PETIT_GLUON,
+        return_value=All2AllBackend.GLUON_PETIT,
     ):
         spec = layer.mlp_spec()
 
@@ -95,9 +115,9 @@ def test_petit_gluon_compiled_moe_owns_ep_communication() -> None:
     assert spec.output_placement is None
 
 
-def test_petit_gluon_requires_matching_backend_pair() -> None:
+def test_gluon_petit_requires_matching_backend_pair() -> None:
     args = _validation_args(
-        moe_backend="petit_gluon",
+        moe_backend="gluon_petit",
         draft_moe_backend=None,
         all2all_backend="none",
         speculative_algorithm=None,
@@ -106,15 +126,15 @@ def test_petit_gluon_requires_matching_backend_pair() -> None:
         chunked_prefill_size=1024,
     )
 
-    with pytest.raises(ValueError, match="--all2all-backend petit_gluon"):
+    with pytest.raises(ValueError, match="--all2all-backend gluon_petit"):
         ServerArgs.validate_petit_moe_options(args)
 
 
-def test_petit_gluon_rejects_mixed_draft_backend() -> None:
+def test_gluon_petit_rejects_mixed_draft_backend() -> None:
     args = _validation_args(
-        moe_backend="petit_gluon",
+        moe_backend="gluon_petit",
         draft_moe_backend="triton",
-        all2all_backend="petit_gluon",
+        all2all_backend="gluon_petit",
         speculative_algorithm="MTP",
         max_num_seqs=160,
         dtype="bfloat16",
@@ -125,11 +145,11 @@ def test_petit_gluon_rejects_mixed_draft_backend() -> None:
         ServerArgs.validate_petit_moe_options(args)
 
 
-def test_petit_gluon_rejects_non_bfloat16_dtype() -> None:
+def test_gluon_petit_rejects_non_bfloat16_dtype() -> None:
     args = _validation_args(
-        moe_backend="petit_gluon",
+        moe_backend="gluon_petit",
         draft_moe_backend=None,
-        all2all_backend="petit_gluon",
+        all2all_backend="gluon_petit",
         speculative_algorithm=None,
         max_num_seqs=160,
         dtype="float16",
@@ -140,11 +160,11 @@ def test_petit_gluon_rejects_non_bfloat16_dtype() -> None:
         ServerArgs.validate_petit_moe_options(args)
 
 
-def test_petit_gluon_rejects_decode_capacity_above_workspace_limit() -> None:
+def test_gluon_petit_rejects_decode_capacity_above_workspace_limit() -> None:
     args = _validation_args(
-        moe_backend="petit_gluon",
+        moe_backend="gluon_petit",
         draft_moe_backend=None,
-        all2all_backend="petit_gluon",
+        all2all_backend="gluon_petit",
         speculative_algorithm=None,
         max_num_seqs=8200,
         dtype="bfloat16",
@@ -155,7 +175,7 @@ def test_petit_gluon_rejects_decode_capacity_above_workspace_limit() -> None:
         ServerArgs.validate_petit_moe_options(args)
 
 
-def test_dsv4_petit_gluon_zero_token_routing_shapes() -> None:
+def test_dsv4_gluon_petit_zero_token_routing_shapes() -> None:
     from tokenspeed.runtime.models.deepseek_v4 import DeepseekV4MoE
 
     layer = DeepseekV4MoE.__new__(DeepseekV4MoE)
@@ -177,9 +197,9 @@ def test_dsv4_petit_gluon_zero_token_routing_shapes() -> None:
 @pytest.fixture
 def petit_args() -> SimpleNamespace:
     return _validation_args(
-        moe_backend="petit_gluon",
+        moe_backend="gluon_petit",
         draft_moe_backend=None,
-        all2all_backend="petit_gluon",
+        all2all_backend="gluon_petit",
         speculative_algorithm=None,
         max_num_seqs=8192,
         dtype="bfloat16",
@@ -192,9 +212,9 @@ def test_validate_calls_petit_validation() -> None:
     # that the public validation entry point reaches the backend-pair check.
     with mock.patch.object(ServerArgs, "__post_init__", return_value=None):
         args = ServerArgs(model="test")
-    args.moe_backend = "petit_gluon"
+    args.moe_backend = "gluon_petit"
     args.all2all_backend = "none"
-    with pytest.raises(ValueError, match="--all2all-backend petit_gluon"):
+    with pytest.raises(ValueError, match="--all2all-backend gluon_petit"):
         args.validate()
 
 
@@ -204,7 +224,7 @@ def test_validate_calls_petit_validation() -> None:
         ({}, None),
         ({"draft_moe_backend": "triton"}, None),  # Inactive draft is ignored.
         ({"speculative_algorithm": "MTP"}, None),  # Draft inherits target.
-        ({"speculative_algorithm": "MTP", "draft_moe_backend": "petit_gluon"}, None),
+        ({"speculative_algorithm": "MTP", "draft_moe_backend": "gluon_petit"}, None),
         ({"moe_backend": "triton"}, "incompatible target=triton"),
         (
             {"moe_backend": "triton", "all2all_backend": "none", "dtype": "float16"},
@@ -323,10 +343,10 @@ def test_petit_layer_constraints(
         mock.patch.object(
             expert_module,
             "get_all2all_backend",
-            return_value=All2AllBackend.PETIT_GLUON,
+            return_value=All2AllBackend.GLUON_PETIT,
         ),
         mock.patch.object(
-            expert_module, "get_moe_backend", return_value=MoeBackend.PETIT_GLUON
+            expert_module, "get_moe_backend", return_value=MoeBackend.GLUON_PETIT
         ),
         mock.patch.object(
             expert_module.tokenspeed_kernel,
@@ -344,5 +364,5 @@ def test_petit_layer_constraints(
             plan.assert_called_once()
             assert plan.call_args.kwargs["ep_size"] == 8
             assert plan.call_args.kwargs["solution"] == "gluon"
-            assert plan.call_args.kwargs["a2a_backend"] == "petit_gluon"
+            assert plan.call_args.kwargs["a2a_backend"] == "gluon_petit"
             weights.assert_called_once()

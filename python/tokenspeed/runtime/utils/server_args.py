@@ -924,28 +924,28 @@ class ServerArgs:
             active_moe_backends.append(
                 ("draft", self.draft_moe_backend or self.moe_backend)
             )
-        petit_gluon_roles = [
-            role for role, backend in active_moe_backends if backend == "petit_gluon"
+        gluon_petit_roles = [
+            role for role, backend in active_moe_backends if backend == "gluon_petit"
         ]
-        if self.all2all_backend == "petit_gluon":
+        if self.all2all_backend == "gluon_petit":
             mismatched_roles = [
                 f"{role}={backend}"
                 for role, backend in active_moe_backends
-                if backend != "petit_gluon"
+                if backend != "gluon_petit"
             ]
             if mismatched_roles:
                 raise ValueError(
                     "Gluon Petit MegaMoE requires every active MoE backend to "
-                    "match --all2all-backend petit_gluon; incompatible "
+                    "match --all2all-backend gluon_petit; incompatible "
                     + ", ".join(mismatched_roles)
                 )
-        elif petit_gluon_roles:
+        elif gluon_petit_roles:
             raise ValueError(
-                "Gluon Petit MegaMoE requires --all2all-backend petit_gluon "
-                f"for the active {', '.join(petit_gluon_roles)} MoE backend"
+                "Gluon Petit MegaMoE requires --all2all-backend gluon_petit "
+                f"for the active {', '.join(gluon_petit_roles)} MoE backend"
             )
 
-        if petit_gluon_roles:
+        if gluon_petit_roles:
             if self.dtype != "bfloat16":
                 raise ValueError(
                     "Gluon Petit MegaMoE requires --dtype bfloat16; "
@@ -1584,7 +1584,7 @@ class ServerArgs:
             default=ServerArgs.moe_backend,
             help="MoE runner backend: auto, triton, gluon, flashinfer_trtllm, "
             "flashinfer_cutlass, flashinfer_cutedsl, deep_gemm, mega_moe, "
-            "petit_gluon",
+            "gluon_petit",
         )
         parser.add_argument(
             "--moe-mxfp4-fp8-activation",
@@ -1609,9 +1609,9 @@ class ServerArgs:
             metavar="ALL2ALL_BACKEND",
             type=str,
             default=ServerArgs.all2all_backend,
-            choices=["none", "agrs", "deepep", "flashinfer", "petit_gluon"],
+            choices=["none", "agrs", "deepep", "flashinfer", "gluon_petit"],
             help="MoE communication backend. agrs and flashinfer explicitly select "
-            "the Kimi-K3 attention-DP transport; petit_gluon selects the fused "
+            "the Kimi-K3 attention-DP transport; gluon_petit selects the fused "
             "Petit MegaMoE transport; none preserves existing behavior.",
         )
         parser.add_argument(

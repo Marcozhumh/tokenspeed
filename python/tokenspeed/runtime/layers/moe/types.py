@@ -43,5 +43,5 @@ class MoELayerSpec:
         return self.a2a_backend == "deepep"
 
     @property
-    def use_petit_gluon(self) -> bool:
-        return self.a2a_backend == "petit_gluon"
+    def use_gluon_petit(self) -> bool:
+        return self.a2a_backend == "gluon_petit"

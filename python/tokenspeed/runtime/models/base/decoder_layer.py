@@ -361,7 +361,7 @@ class CompiledDecoderLayer(nn.Module, Generic[_C]):
 class CompiledMoEDecoderLayer(CompiledDecoderLayer):
 
     def mlp_spec(self) -> ModuleSpec:
-        if get_all2all_backend().is_petit_gluon():
+        if get_all2all_backend().is_gluon_petit():
             # MegaMoE consumes and returns the rank-local attention-DP token
             # shard. Its fused kernel owns expert dispatch and combine, so the
             # layer compiler must not wrap it in the all-gather/reduce-scatter

@@ -45,7 +45,7 @@ logger = logging.getLogger(__name__)
 def _import_petit_kernel() -> Any:
     """Import the vendored implementation only after Petit is selected."""
     try:
-        from tokenspeed_kernel.thirdparty.petit_gluon import load_petit_kernel
+        from tokenspeed_kernel.thirdparty.gluon_petit import load_petit_kernel
 
         return load_petit_kernel()
     except (ImportError, RuntimeError) as exc:
@@ -298,7 +298,7 @@ def gluon_petit_mxfp4_megamoe_weights(plan: dict, w: torch.nn.Module) -> None:
     """
     del plan
     profile = _validate_layer(w)
-    w.petit_gluon_profile = profile
+    w.gluon_petit_profile = profile
     _get_workspace(w.w13_weight.device, profile)
     petit_kernel = _import_petit_kernel()
 
@@ -354,12 +354,12 @@ def gluon_petit_mxfp4_megamoe_weights(plan: dict, w: torch.nn.Module) -> None:
             petit_format=True,
         )
 
-    w.petit_gluon_w13_weight = w13.contiguous()
-    w.petit_gluon_w2_weight = w2.contiguous()
-    w.petit_gluon_w13_scale = s13.contiguous()
-    w.petit_gluon_w2_scale = s2.contiguous()
-    w.petit_gluon_w13_bias = None if b13 is None else b13.contiguous()
-    w.petit_gluon_w2_bias = None if b2 is None else b2.contiguous()
+    w.gluon_petit_w13_weight = w13.contiguous()
+    w.gluon_petit_w2_weight = w2.contiguous()
+    w.gluon_petit_w13_scale = s13.contiguous()
+    w.gluon_petit_w2_scale = s2.contiguous()
+    w.gluon_petit_w13_bias = None if b13 is None else b13.contiguous()
+    w.gluon_petit_w2_bias = None if b2 is None else b2.contiguous()
     for name in (
         "w13_weight",
         "w2_weight",
@@ -452,7 +452,7 @@ def gluon_petit_mxfp4_megamoe_apply(
             "Gluon Petit MegaMoE received more than 1024 tokens on one rank"
         )
 
-    profile = w.petit_gluon_profile
+    profile = w.gluon_petit_profile
     workspace = _get_workspace(x.device, profile)
     inputs = _slice_inputs(workspace.inputs, num_tokens)
     if num_tokens:
@@ -464,13 +464,13 @@ def gluon_petit_mxfp4_megamoe_apply(
     output = x.new_empty((num_tokens, profile.model_dim))
     return workspace.config.run(
         workspace.heap,
-        w.petit_gluon_w13_weight,
-        w.petit_gluon_w2_weight,
-        w.petit_gluon_w13_scale,
-        w.petit_gluon_w2_scale,
+        w.gluon_petit_w13_weight,
+        w.gluon_petit_w2_weight,
+        w.gluon_petit_w13_scale,
+        w.gluon_petit_w2_scale,
         num_tokens,
-        w13_bias=w.petit_gluon_w13_bias,
-        w2_bias=w.petit_gluon_w2_bias,
+        w13_bias=w.gluon_petit_w13_bias,
+        w2_bias=w.gluon_petit_w2_bias,
         out=output,
         inputs=inputs,
         profile=None,

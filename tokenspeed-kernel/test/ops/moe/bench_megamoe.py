@@ -40,7 +40,7 @@ from pathlib import Path
 
 import torch
 import torch.distributed as dist
-from tokenspeed_kernel.thirdparty.petit_gluon import load_petit_kernel
+from tokenspeed_kernel.thirdparty.gluon_petit import load_petit_kernel
 from torch.cuda import nvtx
 
 petit_kernel = load_petit_kernel()
@@ -830,7 +830,7 @@ def summarize_trace_replay(
 
     return {
         "record_type": "routing_trace_aggregate",
-        "backend": "petit_gluon",
+        "backend": "gluon_petit",
         "routing_replay": (
             "gsm8k_c128_decode_step"
             if args.gsm8k_c128_decode_step is not None
@@ -1082,14 +1082,14 @@ def run_one(
     def reduce_fn() -> None:
         range_call(
             args.profile_ranges,
-            "petit_gluon:tp_reduce_for_topk",
+            "gluon_petit:tp_reduce_for_topk",
             lambda: stage_tp_reduce(hidden, reduced_hidden, tp_group, topo.tp_size),
         )
 
     def topk_fn() -> None:
         range_call(
             args.profile_ranges,
-            "petit_gluon:topk",
+            "gluon_petit:topk",
             lambda: stage_topk(
                 reduced_hidden,
                 router_logits,
@@ -1101,19 +1101,19 @@ def run_one(
         )
 
     def prepare_fn() -> None:
-        range_call(args.profile_ranges, "petit_gluon:prep_dispatch", backend_prepare)
+        range_call(args.profile_ranges, "gluon_petit:prep_dispatch", backend_prepare)
 
     def compute_fn() -> torch.Tensor:
         return range_call(
             args.profile_ranges,
-            "petit_gluon:moe_compute_combine",
+            "gluon_petit:moe_compute_combine",
             backend_compute,
         )
 
     def total_fn() -> torch.Tensor:
         return range_call(
             args.profile_ranges,
-            "petit_gluon:total",
+            "gluon_petit:total",
             lambda: (
                 reduce_fn(),
                 topk_fn(),
@@ -1182,7 +1182,7 @@ def run_one(
     route_tps = routes / (total_max * 1.0e-3) if total_max > 0 else float("inf")
     row: dict[str, object] = {
         "model": args.model_name,
-        "backend": "petit_gluon",
+        "backend": "gluon_petit",
         "batch_size": batch_size,
         "m": m,
         "global_m": global_m,
