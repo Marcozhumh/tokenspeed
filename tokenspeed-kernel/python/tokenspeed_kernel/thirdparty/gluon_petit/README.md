@@ -6,9 +6,9 @@ implementation derived from
 whose package metadata identifies version 0.0.5. The upstream BSD 3-Clause
 license is reproduced in `LICENSE.txt`.
 
-The vendored files preserve Petit's source without import rewrites or kernel
-changes. TokenSpeed's package boundary adds the vendor root to Python's module
-search path so the upstream `lib` and `petit_kernel` imports resolve unchanged.
+TokenSpeed's package boundary adds the vendor root to Python's module search
+path so the upstream `lib` and `petit_kernel` imports resolve unchanged. The
+vendored runtime retains only the supported MegaMoE execution path.
 The package uses stock Triton 3.8.0 for the Gluon compiler contract used by the
 upstream kernels.
 
@@ -43,3 +43,9 @@ placement, and no more than 1024 tokens per rank. The registered profiles are
 GPT-OSS 120B and DeepSeek V4. DeepSeek V4 uses Petit's unchanged unclamped
 SiLU operation even when the checkpoint declares an activation clamp; the
 runtime warns when it ignores such a clamp.
+
+## Retained API
+
+The vendored runtime exposes MegaMoE only. Unused non-MegaMoE launchers and
+their FP8 paths are removed; `Moe2StageConfig` and `fmoe_matmul_2stage_*` are
+no longer exported. The registered Gluon Petit backend is unchanged.

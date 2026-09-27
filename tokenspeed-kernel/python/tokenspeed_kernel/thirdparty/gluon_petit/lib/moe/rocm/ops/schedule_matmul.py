@@ -2,56 +2,10 @@
 
 import triton.experimental.gluon as g
 from lib.gemm.rocm.amd_intrinsics import (
-    amdgcn_mov_dpp,
-    amdgcn_pk_fma_f32,
-    mma_m16n16k128_fp8_fp8_f32,
     mma_scale_m16n16k128_fp4_fp4_f32,
 )
 from lib.tal.device import DeviceTemplate, device_method
 from triton.experimental.gluon import language as l
-
-
-@g.jit
-def Fma4(a, s, c):
-    a2 = (a[:2], a[2:])
-    c2 = (c[:2], c[2:])
-    if isinstance(s, l.tuple):
-        s2 = (s[:2], s[2:])
-    else:
-        s2 = ((s, s), (s, s))
-    r0 = amdgcn_pk_fma_f32(s2[0], c2[0], a2[0])
-    r1 = amdgcn_pk_fma_f32(s2[1], c2[1], a2[1])
-    return r0 + r1
-
-
-@g.jit
-def GetDppValue(src, ctrl: l.constexpr):
-    kDppRowNewBcastBase: l.constexpr = 0x150
-    bits = src.to(l.uint32, bitcast=True)
-    if ctrl == 0:
-        dst = amdgcn_mov_dpp(bits, kDppRowNewBcastBase, 0xF, 0xF, False)
-    elif ctrl == 1:
-        dst = amdgcn_mov_dpp(bits, kDppRowNewBcastBase + 1, 0xF, 0xF, False)
-    elif ctrl == 2:
-        dst = amdgcn_mov_dpp(bits, kDppRowNewBcastBase + 2, 0xF, 0xF, False)
-    else:
-        dst = amdgcn_mov_dpp(bits, kDppRowNewBcastBase + 3, 0xF, 0xF, False)
-    return dst.to(src.dtype, bitcast=True)
-
-
-@g.jit
-def LoadFp8E8M0Scale(packed):
-    f = ()
-    for i in l.static_range(4):
-        u = ((packed >> (8 * i)) & 0xFF) << 23
-        f += (u.to(l.float32, bitcast=True) * 16384.0,)
-    return f
-
-
-@g.jit
-def LoadE8M0ScaleByte(packed, byte_idx):
-    bits = ((packed >> (byte_idx * 8)) & 0xFF) << 23
-    return bits.to(l.float32, bitcast=True)
 
 
 @g.jit
@@ -78,42 +32,6 @@ def ScaledMxFp4Mfma(
     return mma_scale_m16n16k128_fp4_fp4_f32(
         a, scale_a, b, scale_b, acc, kOpSelA, kOpSelB
     )
-
-
-class MatmulTile(DeviceTemplate):
-    def __init__(self, kTileN, kInputBits, kWeightBits):
-        self._key = (kTileN, kInputBits, kWeightBits)
-        self.kTileM, self.kTileN, self.kTileK, self.kKStages = 32, kTileN, 256, 2
-        self.kWeightFragments = kTileN * 256 * kWeightBits // (8 * 16 * 64 * 2)
-        self.kActivationFragments = 32 * 256 * kInputBits // (8 * 16 * 64)
-        self.kAccumFragments = 32 * kTileN * 4 // (16 * 64)
-
-
-class BlockScaleFp8Matmul(MatmulTile):
-    def __init__(self):
-        super().__init__(64, 8, 8)
-
-    @device_method
-    def Matmul(self, t, w, x, x_scale, w_scale, stage: l.constexpr):
-        for i in l.static_range(4):
-            w_2 = (w[i * 2][:2], w[i * 2][2:], w[i * 2 + 1][:2], w[i * 2 + 1][2:])
-            for row in l.static_range(2):
-                tg: l.constexpr
-                tg = row * 4
-                x_2 = (
-                    x[tg + stage * 2][:2],
-                    x[tg + stage * 2][2:],
-                    x[tg + stage * 2 + 1][:2],
-                    x[tg + stage * 2 + 1][2:],
-                )
-                z = l.full(w_scale.shape, 0.0, l.float32, w_scale.type.layout)
-                m_acc = (z, z, z, z)
-                m_acc = mma_m16n16k128_fp8_fp8_f32(w_2, x_2, m_acc)
-                x_s = x_scale[row] if stage == 0 else x_scale[row + 2]
-                w_sdpp = GetDppValue(w_scale, (stage << 1) + (i >> 1))
-                result = Fma4(t[i * 2 + row], w_sdpp * x_s, m_acc)
-                t = t[: i * 2 + row] + (result,) + t[i * 2 + row + 1 :]
-        return t
 
 
 class NativeMxFp4Matmul(DeviceTemplate):

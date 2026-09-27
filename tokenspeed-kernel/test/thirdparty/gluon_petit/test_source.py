@@ -239,3 +239,11 @@ def test_native_mxfp4_repack_preserves_shapes() -> None:
     assert packed_scales.is_contiguous()
     assert not torch.equal(packed_weight, weight)
     assert not torch.equal(packed_scales, scales)
+
+
+def test_mega_moe_exports_exclude_removed_launchers() -> None:
+    exports = vars(petit_kernel)
+    assert callable(exports["MegaMoeConfig"])
+    assert callable(exports["repack_moe_kernel_layout"])
+    assert "Moe2StageConfig" not in exports
+    assert not any(name.startswith("fmoe_matmul_2stage_") for name in exports)

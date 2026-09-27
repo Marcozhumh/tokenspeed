@@ -202,13 +202,6 @@ def amdgcn_pk_add_f32(a, b):
 
 
 @g.jit
-def amdgcn_pk_fma_f32(a, b, c):
-    return _native_call(
-        "llvm.fma.v2f32", "v2f32", ("v2f32", "v2f32", "v2f32"), (a, b, c), True
-    )
-
-
-@g.jit
 def amdgcn_exp2f(x):
     return _native_call("llvm.amdgcn.exp2.f32", "f32", ("f32",), (x,), True)
 
@@ -221,13 +214,6 @@ def amdgcn_perm_b32(hi, lo, selector):
 
 
 @g.jit
-def amdgcn_ds_permute_b32(index, src):
-    return _native_call(
-        "llvm.amdgcn.ds.permute", "i32", ("i32", "i32"), (index, src), True
-    )
-
-
-@g.jit
 def amdgcn_cvt_pk_fp8_f32(a, b, old, WORD_HI: l.constexpr):
     return _native_call(
         "llvm.amdgcn.cvt.pk.fp8.f32",
@@ -235,16 +221,6 @@ def amdgcn_cvt_pk_fp8_f32(a, b, old, WORD_HI: l.constexpr):
         ("f32", "f32", "i32", "#i1"),
         (a, b, old, WORD_HI),
         True,
-    )
-
-
-@g.jit
-def amdgcn_cvt_pk_f32_bf8(src, WORD_HI: l.constexpr):
-    # Existing dequantization callers store native float2 in a uint64 bit view.
-    return _pack_float2(
-        _native_call(
-            "llvm.amdgcn.cvt.pk.f32.bf8", "v2f32", ("i32", "#i1"), (src, WORD_HI), True
-        )
     )
 
 
@@ -264,114 +240,6 @@ def amdgcn_sched_group_barrier(
         (mask, size, sync_id),
         False,
     )
-
-
-@g.jit
-def amdgcn_pk_float22half2(a, b):
-    return _native_call("llvm.amdgcn.cvt.pkrtz", "v2f16", ("f32", "f32"), (a, b), True)
-
-
-@g.jit
-def amdgcn_pk_add_i16(a, b):
-    return _native_call("asm.v_pk_add_i16", "i32", ("i32", "i32"), (a, b), True)
-
-
-@g.jit
-def amdgcn_pk_mad_i16(a, b, c):
-    # Triton 3.8's LLVM narrows a divergent "r" operand to its first lane.
-    # Native Clang keeps that operand in a VGPR. Preserve its register class.
-    if isinstance(c, l.tensor) and len(c.shape) != 0:
-        return _native_call(
-            "asm.v_pk_mad_i16.vector", "i32", ("i32", "i32", "i32"), (a, b, c), True
-        )
-    else:
-        return _native_call(
-            "asm.v_pk_mad_i16", "i32", ("i32", "i32", "i32"), (a, b, c), True
-        )
-
-
-@g.jit
-def mma_m16n16k16_fp16(fa, fb, c):
-    if isinstance(c, l.tuple):
-        return _packed_mfma("fp16", fa, fb, c)
-    else:
-        return _packed_mfma_tensor_acc("fp16", fa, fb, c)
-
-
-@g.jit
-def mma_m16n16k16_bf16(fa, fb, c):
-    if isinstance(c, l.tuple):
-        return _packed_mfma("bf16", fa, fb, c)
-    else:
-        return _packed_mfma_tensor_acc("bf16", fa, fb, c)
-
-
-@g.jit
-def mma_m16n16k32_fp8_fp8_f32(fa, fb, c):
-    return _packed_mfma("fp8_fp8", fa, fb, c)
-
-
-@g.jit
-def mma_m16n16k32_bf8_fp8_f32(fa, fb, c):
-    return _packed_mfma("bf8_fp8", fa, fb, c)
-
-
-@g.jit
-def mma_m16n16k32_fp8_bf8_f32(fa, fb, c):
-    return _packed_mfma("fp8_bf8", fa, fb, c)
-
-
-@g.jit
-def mma_m32n32k8_fp16(fa, fb, c):
-    return _native_call(
-        "llvm.amdgcn.mfma.f32.32x32x8f16",
-        "v16f32",
-        ("bits:v4f16", "bits:v4f16", "v16f32", "#i32", "#i32", "#i32"),
-        (_pack_uint2(fa), _pack_uint2(fb), c, 0, 0, 0),
-        True,
-    )
-
-
-@g.jit
-def mma_m32n32k8_bf16(fa, fb, c):
-    # Native explicitly enables this operation only on gfx942, not gfx950.
-    ret = ()
-    for i in l.static_range(16):
-        if len(c[i].shape) == 0:
-            ret += (l.full((), 0, l.float32),)
-        else:
-            ret += (l.full(c[i].shape, 0, l.float32, c[i].type.layout),)
-    return ret
-
-
-@g.jit
-def mma_m16n16k128_fp8_fp8_f32(fa, fb, c):
-    if HAS_AMD_SCALE_FP4_MFMA:
-        return _native_call(
-            "llvm.amdgcn.mfma.scale.f32.16x16x128.f8f6f4.v8i32.v8i32",
-            "v4f32",
-            ("v8i32", "v8i32", "v4f32", "#i32", "#i32", "#i32", "i32", "#i32", "i32"),
-            (
-                fa[0] + fa[1] + fa[2] + fa[3],
-                fb[0] + fb[1] + fb[2] + fb[3],
-                c,
-                0,
-                0,
-                0,
-                0,
-                0,
-                0,
-            ),
-            True,
-        )
-    elif HAS_AMD_FP8_MFMA:
-        c = mma_m16n16k32_fp8_fp8_f32(fa[0], fb[0], c)
-        c = mma_m16n16k32_fp8_fp8_f32(fa[1], fb[1], c)
-        c = mma_m16n16k32_fp8_fp8_f32(fa[2], fb[2], c)
-        c = mma_m16n16k32_fp8_fp8_f32(fa[3], fb[3], c)
-        return c
-    else:
-        return (c[0] * 0.0, c[1] * 0.0, c[2] * 0.0, c[3] * 0.0)
 
 
 @g.jit
@@ -622,18 +490,7 @@ def amdgcn_s_waitcnt_barrier(
     l.barrier()
 
 
-@g.jit
-def amdgcn_s_setprio(priority: l.constexpr):
-    l.static_assert(
-        priority >= 0 and priority <= 3, "s_setprio supports priority values in [0, 3]"
-    )
-    _native_call("llvm.amdgcn.s.setprio", "void", ("#i16",), (priority,), False)
-
-
 # Additional native builtins used by the port's other headers.
-@g.jit
-def bitreverse(v):
-    return _native_call("llvm.bitreverse.i32", "i32", ("i32",), (v,), True)
 
 
 @g.jit
@@ -739,14 +596,6 @@ def _uninitialized_like(value, dtype, _semantic):
     return l.tensor(_semantic.builder.create_poison(ty.to_ir(_semantic.builder)), ty)
 
 
-@builtin
-def _uninitialized_scalar(dtype, _semantic):
-    dtype = _unwrap_if_constexpr(dtype)
-    return l.tensor(
-        _semantic.builder.create_poison(dtype.to_ir(_semantic.builder)), dtype
-    )
-
-
 @g.jit
 def _resource_content(resource):
     if len(resource) == 2:
@@ -783,72 +632,6 @@ def _resource_content(resource):
 
 
 @g.jit
-def _pack_uint2(a):
-    return a[0].to(l.uint32).to(l.uint64) | (a[1].to(l.uint32).to(l.uint64) << 32)
-
-
-@g.jit
-def _packed_mfma(kind: l.constexpr, fa, fb, c):
-    if kind == "fp16":
-        return _native_call(
-            "llvm.amdgcn.mfma.f32.16x16x16f16",
-            "v4f32",
-            ("bits:v4f16", "bits:v4f16", "v4f32", "#i32", "#i32", "#i32"),
-            (_pack_uint2(fa), _pack_uint2(fb), c, 0, 0, 0),
-            True,
-        )
-    elif kind == "bf16":
-        return _native_call(
-            "llvm.amdgcn.mfma.f32.16x16x16bf16.1k",
-            "v4f32",
-            ("bits:v4i16", "bits:v4i16", "v4f32", "#i32", "#i32", "#i32"),
-            (_pack_uint2(fa), _pack_uint2(fb), c, 0, 0, 0),
-            True,
-        )
-    else:
-        return _native_call(
-            "llvm.amdgcn.mfma.f32.16x16x32."
-            + (
-                "fp8.fp8"
-                if kind == "fp8_fp8"
-                else "bf8.fp8" if kind == "bf8_fp8" else "fp8.bf8"
-            ),
-            "v4f32",
-            ("i64", "i64", "v4f32", "#i32", "#i32", "#i32"),
-            (_pack_uint2(fa), _pack_uint2(fb), c, 0, 0, 0),
-            True,
-        )
-
-
-@g.jit
-def _packed_mfma_tensor_acc(kind: l.constexpr, fa, fb, c):
-    # Dense callers retain an MFMA-layout tensor for the native float4 array.
-    # These are register views only; operands go directly to the LLVM builtin.
-    NW: l.constexpr = c.type.shape[0]
-    ret = c.reshape([NW, 4, 4, 16]).permute([0, 1, 3, 2]).reshape([NW * 64, 4])
-    R: l.constexpr = l.BlockedLayout([1, 4], [64, 1], [NW, 1], [1, 0])
-    ret = l.convert_layout(ret, R)
-    p, q = l.split(ret.reshape([NW * 64, 2, 2]))
-    c0, c2 = l.split(p)
-    c1, c3 = l.split(q)
-    L: l.constexpr = fa[0].type.layout
-    words = (
-        l.convert_layout(c0, L),
-        l.convert_layout(c1, L),
-        l.convert_layout(c2, L),
-        l.convert_layout(c3, L),
-    )
-    words = _packed_mfma(kind, fa, fb, words)
-    ret = (
-        l.join(l.join(words[0], words[2]), l.join(words[1], words[3]))
-        .reshape([NW, 4, 16, 4])
-        .permute([0, 1, 3, 2])
-        .reshape([NW, 16, 16])
-    )
-    return l.convert_layout(ret, c.type.layout)
-
-
-@g.jit
 def _pack_float2(a):
     return a[0].to(l.uint32, bitcast=True).to(l.uint64) | (
         a[1].to(l.uint32, bitcast=True).to(l.uint64) << 32
@@ -860,36 +643,6 @@ def _unpack_float2(a):
     return a.to(l.uint32).to(l.float32, bitcast=True), (a >> 32).to(l.uint32).to(
         l.float32, bitcast=True
     )
-
-
-@cache
-def _amdgcn_dequant_library():
-    """Expose native vector operations to LLVM's instruction and hazard passes."""
-    source = """target triple = "amdgcn-amd-amdhsa"
-define i32 @petit_dequant_hmul2(i32 %a, i32 %b) alwaysinline {
-  %av = bitcast i32 %a to <2 x half>
-  %bv = bitcast i32 %b to <2 x half>
-  %r = fmul <2 x half> %av, %bv
-  %bits = bitcast <2 x half> %r to i32
-  ret i32 %bits
-}
-"""
-    manager = get_cache_manager(sha256(source.encode()).hexdigest())
-    path = manager.get_file("petit_dequant.ll")
-    if path is None:
-        path = manager.put(source, "petit_dequant.ll", binary=False)
-    return path
-
-
-@cache
-def _amdgcn_intrinsics_library(load_global_a):
-    # Compatibility with existing launchers. Native calls carry their own library.
-    return _amdgcn_dequant_library()
-
-
-@cache
-def _amdgcn_moe_library():
-    return _amdgcn_dequant_library()
 
 
 def _llvm_type(code):
@@ -1137,34 +890,6 @@ def _native_call(intrinsic, result, signature, args, pure, _semantic):
         )
         outputs.append(l.tensor(handle, ty))
     return l.tuple(outputs) if count > 1 else outputs[0] if count else None
-
-
-@builtin
-def _native_load_scalar(ptr, alignment=None, _semantic=None):
-    """A scalar native dereference, without a one-element LLVM vector wrapper."""
-    dtype = ptr.dtype.element_ty
-    code = "f32" if dtype == l.float32 else "i" + str(dtype.primitive_bitwidth)
-    signature = ("p" + str(_unwrap_if_constexpr(ptr.dtype.address_space)),)
-    args = (ptr,)
-    if _unwrap_if_constexpr(alignment) is not None:
-        signature += ("#i32",)
-        args += (alignment,)
-    value = _native_call(
-        "memory.load." + code, code, signature, args, False, _semantic=_semantic
-    )
-    return _semantic.bitcast(value, dtype)
-
-
-@g.jit
-def _native_shared_memory(words: l.constexpr, alignment: l.constexpr = 16):
-    """One native static shared allocation per kernel, retaining its LLVM base."""
-    return (
-        _native_call(
-            "memory.shared.i32", "i32", ("#i32", "#i32"), (words, alignment), False
-        )
-        .to(l.uint64)
-        .to(l.pointer_type(l.uint32, 3))
-    )
 
 
 @builtin
