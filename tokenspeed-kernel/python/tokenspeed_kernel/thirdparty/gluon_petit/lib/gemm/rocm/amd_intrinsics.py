@@ -45,7 +45,6 @@ from triton.experimental.gluon.language._core import (
 from triton.runtime.cache import get_cache_manager
 
 # This port targets gfx950. Match the native device-compilation capability flags.
-HAS_AMD_SCALE_FP4_MFMA = l.constexpr(True)
 HAS_AMD_SCHED_BARRIER = l.constexpr(True)
 HAS_AMD_SCHED_GROUP_BARRIER = l.constexpr(True)
 kWarpSize = l.constexpr(64)
@@ -196,32 +195,6 @@ def amdgcn_sched_group_barrier(
         (mask, size, sync_id),
         False,
     )
-
-
-@g.jit
-def mma_scale_m16n16k128_fp4_fp4_f32(
-    fa, scale_a, fb, scale_b, c, kOpSelA: l.constexpr, kOpSelB: l.constexpr
-):
-    if HAS_AMD_SCALE_FP4_MFMA:
-        return _native_call(
-            "llvm.amdgcn.mfma.scale.f32.16x16x128.f8f6f4.v8i32.v8i32",
-            "v4f32",
-            ("v8i32", "v8i32", "v4f32", "#i32", "#i32", "#i32", "i32", "#i32", "i32"),
-            (
-                fa + (0, 0, 0, 0),
-                fb + (0, 0, 0, 0),
-                c,
-                4,
-                4,
-                kOpSelA,
-                scale_a,
-                kOpSelB,
-                scale_b,
-            ),
-            True,
-        )
-    else:
-        return c
 
 
 @g.jit

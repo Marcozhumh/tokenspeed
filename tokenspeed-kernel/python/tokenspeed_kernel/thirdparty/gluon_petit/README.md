@@ -53,8 +53,8 @@ no longer exported. The registered Gluon Petit backend is unchanged.
 Dispatch, scheduling, both matrix stages, and combine use distributed Gluon
 values with explicit masks for memory side effects. Wave-local polling does
 not require other waves to participate in a reduction. The thread compiler
-and its scalar stage ABI are removed. The native scaled MFMA instructions and
-K accumulation order are preserved in this conversion.
+and its scalar stage ABI are removed. Matrix tiles use `amd.cdna4.mfma_scaled` with explicit operand and scale
+layouts. The per-wave register contract and K accumulation order are preserved.
 
 Partial scale loads suppress inactive lanes at the instruction: an out-of-range
 buffer address alone still writes zeros to LDS and can overwrite valid scales.
@@ -65,11 +65,14 @@ The barrier utilities document publication scope and payload acquire semantics.
 Run the GFX950 helper tests and the EP8 sparse-weight numerical reference:
 
 ```bash
-pytest tokenspeed-kernel/test/amd/ops/moe/test_gluon_petit_tensor.py
+pytest tokenspeed-kernel/test/amd/ops/moe/test_gluon_petit_tensor.py \
+  tokenspeed-kernel/test/amd/ops/moe/test_gluon_petit_mfma.py
 torchrun --standalone --nproc-per-node=8 -m pytest --import-mode=importlib \
   tokenspeed-kernel/test/amd/ops/moe/test_gluon_petit_distributed.py
 ```
 
+The MFMA test compares all supported tile shapes and wave counts bit for bit
+against the original native instruction sequence.
 The distributed test covers balanced and uneven input counts, empty ranks,
 partial scale tiles, capacity, skewed destinations, and refreshed CUDA graphs.
 Set `PETIT_OUTPUT_DIR` to save outputs for exact cross-version comparisons.
