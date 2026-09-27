@@ -66,7 +66,7 @@ class Topology:
     local_expert_start: int
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Benchmark the Gluon MegaMoE full path."
     )
@@ -164,7 +164,7 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Emit NVTX/ROCTx ranges around benchmark stages. Off by default because it can perturb ROCm timings.",
     )
-    return parser.parse_args()
+    return parser.parse_args(argv)
 
 
 def configure_trace_suite(args: argparse.Namespace) -> None:
@@ -1210,6 +1210,10 @@ def run_one(
         "timed_boundary": "bf16_hidden_to_bf16_combined_output",
         "routing_metadata_timed": 1,
         "graph": int(graph),
+        "graph_iters": args.graph_iters,
+        "warmup": args.warmup,
+        "repeat": args.repeat,
+        "seed": args.seed,
         "total_iters": total_iters,
         "valid_output": int(valid_output),
         "tokens_per_s": tps,
@@ -1237,8 +1241,8 @@ def run_one(
     return row
 
 
-def main() -> int:
-    args = parse_args()
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(argv)
     try:
         configure_trace_suite(args)
         validate_args(args)

@@ -847,60 +847,23 @@ unclamped SiLU operation; if the checkpoint declares a SwiGLU clamp, TokenSpeed
 warns that the clamp is ignored. This is an explicit approximation and is
 never selected by `--moe-backend auto`.
 
-Measure the fused path directly from the repository with:
-
-```bash
-PYTHONPATH=tokenspeed-kernel/python \
-torchrun --standalone --nproc-per-node=8 \
-  tokenspeed-kernel/test/ops/moe/bench_petit_gluon_megamoe.py \
-  --profile gpt_oss_120b --tokens 1 2 4 8 16 32 64 128 256 512 1024
-
-PYTHONPATH=tokenspeed-kernel/python \
-torchrun --standalone --nproc-per-node=8 \
-  tokenspeed-kernel/test/ops/moe/bench_petit_gluon_megamoe.py \
-  --profile dsv4 --tokens 1 2 4 8 16 32 64 128 256 512 1024
-```
-
-The benchmark reports the maximum rank latency for eager execution and CUDA
-graph replay after warmup.
-
-For the ported Petit full-path benchmark, use `bench_megamoe.py`. Unlike the
-adapter benchmark above, its timed region includes AITER fused top-k routing,
-live routing metadata, activation quantization, dispatch, both expert stages,
-return, and combine. It also supports asymmetric per-rank token counts and
-routing-trace replay; run `--help` for those options. The default profile is
-GPT-OSS-120B. A compatible AMD AITER installation is an optional benchmark
-dependency; keep its JIT modules in the local virtual environment so they are
-built against that environment's PyTorch:
+Measure the full MoE path on eight gfx950 GPUs with a compatible AITER
+installation:
 
 ```bash
 AITER_JIT_DIR="$PWD/.venv/aiter_jit" \
 PYTHONPATH=tokenspeed-kernel/python \
 torchrun --standalone --nproc-per-node=8 -- \
-  tokenspeed-kernel/test/ops/moe/bench_megamoe.py \
-  --m 8 16 32 64 128 256 512 1024 \
-  --batch-size 8 16 32 64 128 256 512 1024 \
-  --warmup 10 --repeat 100
+  tokenspeed-kernel/test/ops/moe/bench_petit_gluon_megamoe.py \
+  --profile dsv4 --mode graph --tokens 1 16 64 256 512 1024 \
+  --warmup 20 --repeat 100 --graph-iters 16
 ```
 
-For the DeepSeek V4 shape, select its registered Gluon configuration:
-
-```bash
-AITER_JIT_DIR="$PWD/.venv/aiter_jit" \
-PYTHONPATH=tokenspeed-kernel/python \
-torchrun --standalone --nproc-per-node=8 -- \
-  tokenspeed-kernel/test/ops/moe/bench_megamoe.py \
-  --global-experts 384 --topk 6 --hidden-size 7168 \
-  --padded-hidden-size 7168 --intermediate-size 3072 \
-  --activation-function silu --no-bias --model-name DSV4 \
-  --m 8 16 32 64 128 256 512 1024 \
-  --batch-size 8 16 32 64 128 256 512 1024 \
-  --warmup 10 --repeat 100
-```
-
-These commands require eight supported AMD GPUs and a working ROCm compiler
-toolchain. AITER is used only for the benchmark's top-k stage; the vendored
-Petit MegaMoE operations are unchanged.
+Use `--profile gpt_oss_120b` for GPT-OSS 120B. Both profiles measure top-k,
+routing preparation, expert computation, communication, and combine under
+graph replay. Use `--jsonl` or `--csv` to save timing results and
+`--stage-breakdown` for stage timings. For asymmetric workloads and routing
+trace replay, use `tokenspeed-kernel/test/ops/moe/bench_megamoe.py --help`.
 
 **V4-Flash** — 4× B200 (SM100), data-parallel + expert-parallel:
 
