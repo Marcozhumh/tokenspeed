@@ -18,13 +18,17 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
+from contextlib import nullcontext
 from types import SimpleNamespace
 from unittest import mock
 
 import pytest
 import torch
 
+from tokenspeed.runtime.layers.moe import expert as expert_module
+from tokenspeed.runtime.layers.moe.expert import MoELayer
 from tokenspeed.runtime.layers.moe.utils import All2AllBackend, MoeBackend
+from tokenspeed.runtime.layers.quantization.mxfp4 import Mxfp4Config
 from tokenspeed.runtime.models.base.decoder_layer import CompiledMoEDecoderLayer
 from tokenspeed.runtime.models.base.module_spec import ModuleKind
 from tokenspeed.runtime.models.base.placement import ParallelGroup, Replicate
@@ -103,7 +107,7 @@ def test_petit_gluon_requires_matching_backend_pair() -> None:
     )
 
     with pytest.raises(ValueError, match="--all2all-backend petit_gluon"):
-        ServerArgs.validate(args)
+        ServerArgs.validate_petit_moe_options(args)
 
 
 def test_petit_gluon_rejects_mixed_draft_backend() -> None:
@@ -118,7 +122,7 @@ def test_petit_gluon_rejects_mixed_draft_backend() -> None:
     )
 
     with pytest.raises(ValueError, match="incompatible draft=triton"):
-        ServerArgs.validate(args)
+        ServerArgs.validate_petit_moe_options(args)
 
 
 def test_petit_gluon_rejects_non_bfloat16_dtype() -> None:
@@ -133,7 +137,7 @@ def test_petit_gluon_rejects_non_bfloat16_dtype() -> None:
     )
 
     with pytest.raises(ValueError, match="requires --dtype bfloat16"):
-        ServerArgs.validate(args)
+        ServerArgs.validate_petit_moe_options(args)
 
 
 def test_petit_gluon_rejects_decode_capacity_above_workspace_limit() -> None:
@@ -147,14 +151,8 @@ def test_petit_gluon_rejects_decode_capacity_above_workspace_limit() -> None:
         chunked_prefill_size=1024,
     )
 
-    with (
-        mock.patch(
-            "tokenspeed.runtime.utils.server_args.current_platform",
-            return_value=SimpleNamespace(is_cdna4=True),
-        ),
-        pytest.raises(ValueError, match="1024 decode tokens per rank"),
-    ):
-        ServerArgs.validate(args)
+    with pytest.raises(ValueError, match="1024 decode tokens per rank"):
+        ServerArgs.validate_petit_moe_options(args)
 
 
 def test_dsv4_petit_gluon_zero_token_routing_shapes() -> None:
@@ -164,10 +162,185 @@ def test_dsv4_petit_gluon_zero_token_routing_shapes() -> None:
     layer.config = SimpleNamespace(num_experts_per_tok=6, n_routed_experts=384)
     hidden_states = torch.empty((0, 7168), dtype=torch.bfloat16)
 
-    weights, ids, scores = layer._select_experts(hidden_states, input_ids=None)
+    layer.gate = SimpleNamespace(tid2eid=None, e_score_correction_bias=None)
+    scores, correction, hashes, input_ids = layer._routing_inputs(
+        hidden_states, input_ids=None
+    )
 
-    assert weights.shape == (0, 6)
-    assert weights.dtype == torch.float32
-    assert ids.shape == (0, 6)
-    assert ids.dtype == torch.int32
     assert scores.shape == (0, 384)
+    assert scores.dtype == torch.float32
+    assert correction is None
+    assert hashes is None
+    assert input_ids is None
+
+
+@pytest.fixture
+def petit_args() -> SimpleNamespace:
+    return _validation_args(
+        moe_backend="petit_gluon",
+        draft_moe_backend=None,
+        all2all_backend="petit_gluon",
+        speculative_algorithm=None,
+        max_num_seqs=8192,
+        dtype="bfloat16",
+        chunked_prefill_size=1024,
+    )
+
+
+def test_validate_calls_petit_validation() -> None:
+    # Construct real ServerArgs without model/device initialization, then check
+    # that the public validation entry point reaches the backend-pair check.
+    with mock.patch.object(ServerArgs, "__post_init__", return_value=None):
+        args = ServerArgs(model="test")
+    args.moe_backend = "petit_gluon"
+    args.all2all_backend = "none"
+    with pytest.raises(ValueError, match="--all2all-backend petit_gluon"):
+        args.validate()
+
+
+@pytest.mark.parametrize(
+    "overrides,error",
+    [
+        ({}, None),
+        ({"draft_moe_backend": "triton"}, None),  # Inactive draft is ignored.
+        ({"speculative_algorithm": "MTP"}, None),  # Draft inherits target.
+        ({"speculative_algorithm": "MTP", "draft_moe_backend": "petit_gluon"}, None),
+        ({"moe_backend": "triton"}, "incompatible target=triton"),
+        (
+            {"moe_backend": "triton", "all2all_backend": "none", "dtype": "float16"},
+            None,
+        ),
+        ({"max_num_seqs": 8200}, "1024 decode tokens per rank"),
+        (
+            {
+                "speculative_algorithm": "MTP",
+                "speculative_num_draft_tokens": 2,
+                "max_num_seqs": 4096,
+            },
+            None,
+        ),
+        (
+            {
+                "speculative_algorithm": "MTP",
+                "speculative_num_draft_tokens": 2,
+                "max_num_seqs": 4104,
+            },
+            "1024 decode tokens per rank",
+        ),
+        ({"chunked_prefill_size": 0}, "1024 prefill tokens per rank"),
+        ({"chunked_prefill_size": 1025}, "1024 prefill tokens per rank"),
+        ({"max_prefill_tokens": 1025}, "1024 prefill tokens per rank"),
+    ],
+)
+def test_petit_shared_options(petit_args, overrides, error) -> None:
+    vars(petit_args).update(overrides)
+    with pytest.raises(ValueError, match=error) if error else nullcontext():
+        ServerArgs.validate_petit_moe_options(petit_args)
+
+
+@pytest.mark.parametrize("attn_tp,attn_cp,dense_tp", [(2, 1, 1), (1, 2, 1), (1, 1, 2)])
+def test_petit_shared_parallelism(petit_args, attn_tp, attn_cp, dense_tp) -> None:
+    petit_args.mapping.attn.tp_size = attn_tp
+    petit_args.mapping.attn.cp_size = attn_cp
+    petit_args.mapping.dense.tp_size = dense_tp
+    with pytest.raises(ValueError, match="attention TP1, CP1, and dense TP1"):
+        ServerArgs.validate_petit_moe_options(petit_args)
+
+
+@pytest.mark.parametrize(
+    "mapping_overrides,moe_overrides,options,layer_overrides,is_cdna4,error",
+    [
+        ({}, {}, {}, {}, True, None),
+        ({}, {}, {"init_expert_location": "trivial"}, {}, True, None),
+        ({}, {}, {}, {}, False, "requires AMD CDNA4"),
+        ({"nnodes": 2}, {}, {}, {}, True, "supports one node only"),
+        ({"world_size": 4}, {}, {}, {}, True, "world_size=ep_size=8"),
+        ({}, {"ep_size": 4}, {}, {}, True, "world_size=ep_size=8"),
+        ({}, {"tp_size": 2}, {}, {}, True, "MoE tensor parallel size 1"),
+        ({}, {}, {}, {"ep_size": 4}, True, "world_size=ep_size=8"),
+        ({}, {}, {}, {"ep_size": 1, "tp_size": 2}, True, "MoE tensor parallel size 1"),
+        ({}, {}, {"enable_eplb": True}, {}, True, "trivial expert placement"),
+        ({}, {}, {"ep_num_redundant_experts": 8}, {}, True, "trivial expert placement"),
+        (
+            {},
+            {},
+            {"init_expert_location": "custom"},
+            {},
+            True,
+            "trivial expert placement",
+        ),
+        ({}, {}, {}, {"quant_config": None}, True, "serialized MXFP4 expert weights"),
+        ({}, {}, {}, {"activation_alpha": 1.5}, True, "nonstandard SiLU alpha"),
+    ],
+)
+def test_petit_layer_constraints(
+    petit_args,
+    mapping_overrides,
+    moe_overrides,
+    options,
+    layer_overrides,
+    is_cdna4,
+    error,
+) -> None:
+    vars(petit_args.mapping).update(mapping_overrides)
+    vars(petit_args.mapping.moe).update(moe_overrides)
+    vars(petit_args).update(options)
+    # These restrictions belong to the layer, so server validation accepts them.
+    with mock.patch(
+        "tokenspeed.runtime.utils.server_args.current_platform",
+        return_value=SimpleNamespace(is_cdna4=is_cdna4),
+    ):
+        ServerArgs.validate_petit_moe_options(petit_args)
+    layer_args = dict(
+        top_k=4,
+        num_experts=128,
+        hidden_size=2880,
+        intermediate_size=3072,
+        quant_config=Mxfp4Config(
+            ignored_layers=[], is_checkpoint_mxfp4_serialized=True
+        ),
+        layer_index=0,
+        tp_rank=0,
+        tp_size=1,
+        ep_rank=0,
+        ep_size=8,
+    )
+    layer_args.update(layer_overrides)
+    with (
+        mock.patch.dict(
+            expert_module.global_server_args_dict,
+            mapping=petit_args.mapping,
+            enable_eplb=petit_args.enable_eplb,
+            ep_num_redundant_experts=petit_args.ep_num_redundant_experts,
+            init_expert_location=petit_args.init_expert_location,
+            moe_mxfp4_fp8_activation=False,
+        ),
+        mock.patch.object(
+            expert_module,
+            "current_platform",
+            return_value=SimpleNamespace(is_cdna4=is_cdna4),
+        ),
+        mock.patch.object(
+            expert_module,
+            "get_all2all_backend",
+            return_value=All2AllBackend.PETIT_GLUON,
+        ),
+        mock.patch.object(
+            expert_module, "get_moe_backend", return_value=MoeBackend.PETIT_GLUON
+        ),
+        mock.patch.object(
+            expert_module.tokenspeed_kernel,
+            "moe_plan",
+            return_value={"solution": "petit_gluon"},
+        ) as plan,
+        mock.patch.object(expert_module, "create_layer_weights") as weights,
+    ):
+        with pytest.raises(ValueError, match=error) if error else nullcontext():
+            MoELayer(**layer_args)
+        if error:
+            plan.assert_not_called()
+            weights.assert_not_called()
+        else:
+            plan.assert_called_once()
+            assert plan.call_args.kwargs["ep_size"] == 8
+            weights.assert_called_once()

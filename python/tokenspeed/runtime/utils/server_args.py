@@ -914,15 +914,11 @@ class ServerArgs:
                 "and cannot be used at the same time. Please use only one of them."
             )
 
-    def validate(self):
-        if self.low_latency_max_num_tokens_per_gpu <= 0:
-            raise ValueError("--low-latency-max-num-tokens-per-gpu must be positive")
-        if self.device == "npu":
-            if not self.disable_prefill_graph:
-                raise ValueError("NPU execution requires --disable-prefill-graph")
-            if not self.disable_pdl:
-                raise ValueError("NPU execution requires --disable-pdl")
+    def validate_petit_moe_options(self):
+        """Validate shared backend, model, and scheduling options for Petit.
 
+        MoELayer owns hardware, MoE topology, and expert compatibility checks.
+        """
         active_moe_backends = [("target", self.moe_backend)]
         if self.speculative_algorithm is not None:
             active_moe_backends.append(
@@ -955,19 +951,6 @@ class ServerArgs:
                     "Gluon Petit MegaMoE requires --dtype bfloat16; "
                     f"configured dtype={self.dtype}"
                 )
-            platform = current_platform()
-            if not platform.is_cdna4:
-                raise ValueError(
-                    "Gluon Petit MegaMoE currently requires AMD CDNA4 (gfx950)"
-                )
-            if self.mapping.nnodes != 1:
-                raise ValueError("Gluon Petit MegaMoE currently supports one node only")
-            if self.mapping.world_size != 8 or self.mapping.moe.ep_size != 8:
-                raise ValueError("Gluon Petit MegaMoE requires world_size=ep_size=8")
-            if self.mapping.moe.tp_size != 1:
-                raise ValueError(
-                    "Gluon Petit MegaMoE requires MoE tensor parallel size 1"
-                )
             if (
                 self.mapping.attn.tp_size != 1
                 or self.mapping.attn.cp_size != 1
@@ -975,15 +958,6 @@ class ServerArgs:
             ):
                 raise ValueError(
                     "Gluon Petit MegaMoE requires attention TP1, CP1, and dense TP1"
-                )
-            if (
-                self.enable_eplb
-                or self.ep_num_redundant_experts
-                or self.init_expert_location not in (None, "trivial")
-            ):
-                raise ValueError(
-                    "Gluon Petit MegaMoE requires trivial expert placement "
-                    "without EPLB or redundant experts"
                 )
             decode_tokens_per_request = (
                 self.speculative_num_draft_tokens
@@ -1011,6 +985,17 @@ class ServerArgs:
                     "no greater than 1024 and --max-prefill-tokens no greater "
                     "than 1024"
                 )
+
+    def validate(self):
+        if self.low_latency_max_num_tokens_per_gpu <= 0:
+            raise ValueError("--low-latency-max-num-tokens-per-gpu must be positive")
+        if self.device == "npu":
+            if not self.disable_prefill_graph:
+                raise ValueError("NPU execution requires --disable-prefill-graph")
+            if not self.disable_pdl:
+                raise ValueError("NPU execution requires --disable-pdl")
+
+        self.validate_petit_moe_options()
 
         if (
             self.max_num_seqs is not None
