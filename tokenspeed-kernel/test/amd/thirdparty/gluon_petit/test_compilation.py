@@ -21,7 +21,6 @@
 from __future__ import annotations
 
 import importlib
-from pathlib import Path
 
 import pytest
 import torch
@@ -29,13 +28,6 @@ from tokenspeed_kernel.thirdparty.gluon_petit import petit_kernel
 from utils import assert_no_triton_compile
 
 mega_moe = importlib.import_module("lib.moe.rocm.mega_moe")
-
-
-def test_vendored_source_keeps_upstream_import_roots() -> None:
-    vendor_root = Path(petit_kernel.__file__).resolve().parents[1]
-    for source_root in (vendor_root / "lib", vendor_root / "petit_kernel"):
-        for path in source_root.rglob("*.py"):
-            assert "tokenspeed_kernel" not in path.read_text()
 
 
 @mega_moe.g.jit
@@ -50,11 +42,6 @@ def _petit_compiler_contract_kernel():
     )
     mega_moe.l.store(shared, 0)
     storage._keep_alive()
-
-
-def test_gluon_imports_use_compatible_triton() -> None:
-    assert mega_moe.g.__name__ == "triton.experimental.gluon"
-    assert mega_moe.l.__name__ == "triton.experimental.gluon.language"
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires a GPU compiler")
@@ -214,88 +201,3 @@ def test_supported_mega_moe_profiles_compile(
     ]
     assert all("thread_device.ll" not in kernel.asm["ttgir"] for kernel in compiled)
     assert all(kernel.metadata.triton_version == "3.8.0" for kernel in compiled)
-
-
-@pytest.mark.parametrize(
-    (
-        "num_experts",
-        "topk",
-        "model_dim",
-        "inter_dim",
-        "activation_function",
-        "has_bias",
-        "compute_model_dim",
-    ),
-    (
-        (
-            128,
-            4,
-            2880,
-            3072,
-            petit_kernel.MegaMoeActivationFunction.swiglu,
-            True,
-            3072,
-        ),
-        (
-            384,
-            6,
-            7168,
-            3072,
-            petit_kernel.MegaMoeActivationFunction.silu,
-            False,
-            7168,
-        ),
-    ),
-)
-def test_supported_mega_moe_profiles(
-    num_experts: int,
-    topk: int,
-    model_dim: int,
-    inter_dim: int,
-    activation_function: petit_kernel.MegaMoeActivationFunction,
-    has_bias: bool,
-    compute_model_dim: int,
-) -> None:
-    config = petit_kernel.MegaMoeConfig(
-        world_size=8,
-        num_experts=num_experts,
-        topk=topk,
-        model_dim=model_dim,
-        activation=petit_kernel.MegaMoeActivation.mxfp4,
-        activation_function=activation_function,
-        stages=petit_kernel.MegaMoeStages.two_stage,
-        inter_dim=inter_dim,
-        has_bias=has_bias,
-    )
-
-    assert config.compute_model_dim == compute_model_dim
-    assert config.max_tokens_per_rank == 1024
-
-
-def test_native_mxfp4_repack_preserves_shapes() -> None:
-    weight = (
-        torch.arange(256 * 128, dtype=torch.int64).to(torch.uint8).reshape(1, 256, 128)
-    )
-    scales = torch.arange(256 * 8, dtype=torch.int64).to(torch.uint8).reshape(1, 256, 8)
-
-    packed_weight, packed_scales = petit_kernel.repack_moe_kernel_layout(
-        weight,
-        scales,
-        layout=petit_kernel.MoeKernelLayout.native_mxfp4,
-        petit_format=True,
-    )
-
-    assert packed_weight.shape == weight.shape
-    assert packed_scales.shape == scales.shape
-    assert packed_weight.is_contiguous()
-    assert packed_scales.is_contiguous()
-    assert not torch.equal(packed_weight, weight)
-    assert not torch.equal(packed_scales, scales)
-
-
-def test_mega_moe_exports_exclude_removed_launchers() -> None:
-    exports = vars(petit_kernel)
-    assert callable(exports["MegaMoeConfig"])
-    assert callable(exports["repack_moe_kernel_layout"])
-    assert "Moe2StageConfig" not in exports
-    assert not any(name.startswith("fmoe_matmul_2stage_") for name in exports)

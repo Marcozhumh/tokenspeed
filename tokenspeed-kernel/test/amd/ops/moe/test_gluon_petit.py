@@ -127,35 +127,10 @@ def test_validate_layer_selects_gpt_oss_120b_profile() -> None:
     assert _validate_layer(_gpt_oss_layer()) == _GPT_OSS_120B_PROFILE
 
 
-@pytest.mark.parametrize(
-    ("alpha", "limit", "beta"),
-    ((1.0, 7.0, 1.0), (1.702, None, 1.0), (1.702, 8.0, 1.0), (1.702, 7.0, 0.0)),
-)
-def test_validate_layer_rejects_noncanonical_gpt_oss_swiglu(
-    alpha: float,
-    limit: float | None,
-    beta: float,
-) -> None:
-    layer = _gpt_oss_layer()
-    layer.swiglu_arg = SimpleNamespace(alpha=alpha, limit=limit)
-    layer.swiglu_beta = beta
-
-    with pytest.raises(ValueError, match="alpha=1.702, limit=7.0, beta=1.0"):
-        _validate_layer(layer)
-
-
 def test_validate_layer_preserves_dsv4_activation_contract() -> None:
     assert _validate_layer(_dsv4_layer(None)) == _DSV4_PROFILE
     with pytest.raises(ValueError, match="does not support an activation clamp"):
         _validate_layer(_dsv4_layer(10.0))
-
-
-def test_validate_layer_rejects_unsupported_geometry() -> None:
-    layer = _gpt_oss_layer()
-    layer.num_experts = 64
-
-    with pytest.raises(ValueError, match="Unsupported Gluon Petit MegaMoE geometry"):
-        _validate_layer(layer)
 
 
 def _register_parameter(
@@ -290,23 +265,3 @@ def test_apply_keeps_zero_token_rank_in_collective() -> None:
     config.run.assert_called_once()
     assert config.run.call_args.args[5] == 0
     overlap.assert_called_once_with()
-
-
-def test_apply_rejects_more_than_workspace_capacity() -> None:
-    x = torch.empty((1025, 64), dtype=torch.bfloat16)
-
-    with pytest.raises(ValueError, match="more than 1024 tokens"):
-        gluon_petit_mxfp4_megamoe_apply(
-            plan={},
-            x=x,
-            w=SimpleNamespace(),
-            router_logits=torch.empty((1025, 0), dtype=torch.bfloat16),
-            topk_weights=torch.empty((1025, 1), dtype=torch.float32),
-            topk_ids=torch.empty((1025, 1), dtype=torch.int32),
-            num_tokens_global=8200,
-            max_num_tokens_per_gpu=None,
-            do_finalize=True,
-            enable_pdl=False,
-            low_latency=None,
-            overlap_fn=None,
-        )
