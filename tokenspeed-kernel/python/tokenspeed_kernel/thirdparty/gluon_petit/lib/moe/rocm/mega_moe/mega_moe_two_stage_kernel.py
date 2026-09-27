@@ -4,7 +4,7 @@ from typing import NamedTuple
 
 import triton.experimental.gluon as g
 import triton.language as tl
-from lib.gemm.rocm.amd_intrinsics import (
+from lib.gemm.rocm.intrinsics import (
     BufferResource,
     _native_call,
     amdgcn_readfirstlane,
@@ -726,6 +726,11 @@ def MegaMoEStage1(
     Kernel: l.constexpr,
     profile=None,
 ):
+    """Dispatch local routes and produce quantized W13 intermediates on all ranks.
+
+    Every rank participates, including ranks with no input tokens. The caller
+    supplies initialized symmetric storage and launches stage two on this stream.
+    """
     tid = l.arange(
         0, Kernel.kThreads, layout=l.BlockedLayout([1], [64], [Kernel.kNumWarps], [0])
     ).to(l.uint32)
@@ -758,6 +763,7 @@ def MegaMoEStage1(
 def MegaMoEStage2(
     w2, scales_w2, w2_bias, base, rank, Kernel: l.constexpr, profile=None
 ):
+    """Consume stage-one blocks, project W2, and return contributions to peers."""
     tid = l.arange(
         0, Kernel.kThreads, layout=l.BlockedLayout([1], [64], [Kernel.kNumWarps], [0])
     ).to(l.uint32)
@@ -786,6 +792,7 @@ def MegaMoEStage2(
 def MegaMoECombine(
     out, num_tokens, output_row_stride, base, rank, Kernel: l.constexpr, profile=None
 ):
+    """Wait for peer contributions and combine routes into rank-local BF16 rows."""
     tid = l.arange(
         0, Kernel.kThreads, layout=l.BlockedLayout([1], [64], [Kernel.kNumWarps], [0])
     ).to(l.uint32)

@@ -26,6 +26,7 @@ from pathlib import Path
 import pytest
 import torch
 from tokenspeed_kernel.thirdparty.gluon_petit import petit_kernel
+from utils import assert_no_triton_compile
 
 mega_moe = importlib.import_module("lib.moe.rocm.mega_moe")
 
@@ -166,6 +167,45 @@ def test_supported_mega_moe_profiles_compile(
             enable_fp_fusion=False,
         ),
     )
+
+    # Warm each runtime integer specialization class before varying row counts.
+    def warm_rows(rows):
+        mega_moe.MegaMoEStage1.warmup(
+            uint8,
+            uint8,
+            rows,
+            bias,
+            uint8,
+            0,
+            uint8,
+            int32,
+            float32,
+            stage1,
+            None,
+            grid=(stage1.kNumSMs,),
+            num_warps=stage1.kNumWarps,
+            enable_fp_fusion=False,
+        )
+        mega_moe.MegaMoECombine.warmup(
+            bfloat16,
+            rows,
+            config.compute_model_dim,
+            uint8,
+            0,
+            combine,
+            None,
+            grid=(combine.kNumSMs,),
+            num_warps=combine.kNumWarps,
+            enable_fp_fusion=False,
+        )
+
+    for rows in (0, 1, 2, 16):
+        warm_rows(rows)
+    with assert_no_triton_compile(mega_moe.MegaMoEStage1), assert_no_triton_compile(
+        mega_moe.MegaMoECombine
+    ):
+        for rows in (3, 17, 32, 63, 127, 256, 1024):
+            warm_rows(rows)
 
     assert [kernel.metadata.shared for kernel in compiled] == [
         65552 if num_tokens >= 256 else 32784,

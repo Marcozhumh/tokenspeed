@@ -3,7 +3,7 @@
 from typing import NamedTuple
 
 import triton.experimental.gluon as g
-from lib.gemm.rocm.amd_intrinsics import (
+from lib.gemm.rocm.intrinsics import (
     _native_call,
     _native_store_ushort_component,
     _resource_content,

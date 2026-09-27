@@ -273,6 +273,14 @@ def test_petit_shared_parallelism(petit_args, attn_tp, attn_cp, dense_tp) -> Non
         ({}, {}, {}, {}, True, None),
         ({}, {}, {"init_expert_location": "trivial"}, {}, True, None),
         ({}, {}, {}, {}, False, "requires AMD CDNA4"),
+        (
+            {},
+            {},
+            {"moe_mxfp4_fp8_activation": True},
+            {},
+            True,
+            "requested fp8 activations are unsupported",
+        ),
         ({"nnodes": 2}, {}, {}, {}, True, "supports one node only"),
         ({"world_size": 4}, {}, {}, {}, True, "world_size=ep_size=8"),
         ({}, {"ep_size": 4}, {}, {}, True, "world_size=ep_size=8"),
@@ -333,7 +341,7 @@ def test_petit_layer_constraints(
             enable_eplb=petit_args.enable_eplb,
             ep_num_redundant_experts=petit_args.ep_num_redundant_experts,
             init_expert_location=petit_args.init_expert_location,
-            moe_mxfp4_fp8_activation=False,
+            moe_mxfp4_fp8_activation=options.get("moe_mxfp4_fp8_activation", False),
         ),
         mock.patch.object(
             expert_module,

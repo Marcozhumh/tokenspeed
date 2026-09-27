@@ -39,7 +39,7 @@ MxFp4ActivationLayout = _MxFp4ActivationLayout()
 
 from typing import NamedTuple
 
-from lib.gemm.rocm.amd_intrinsics import (
+from lib.gemm.rocm.intrinsics import (
     BufferResource,
     _resource_content,
     amdgcn_ds_swizzle,

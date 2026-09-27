@@ -22,7 +22,6 @@
 
 from __future__ import annotations
 
-import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
@@ -38,8 +37,6 @@ _MAX_TOKENS_PER_RANK = 1024
 _GPT_OSS_SWIGLU_ALPHA = 1.702
 _GPT_OSS_SWIGLU_LIMIT = 7.0
 _GPT_OSS_SWIGLU_BETA = 1.0
-
-logger = logging.getLogger(__name__)
 
 
 def _import_petit_kernel() -> Any:
@@ -85,7 +82,6 @@ _DSV4_PROFILE = _Profile(
     has_bias=False,
 )
 _PROFILES = (_GPT_OSS_120B_PROFILE, _DSV4_PROFILE)
-_warned_dsv4_clamp = False
 
 
 def _release_parameter(module: torch.nn.Module, name: str) -> None:
@@ -212,18 +208,11 @@ def _validate_layer(w: torch.nn.Module) -> _Profile:
     ):
         raise ValueError("Gluon Petit DSV4 MegaMoE requires bias-free experts")
 
-    global _warned_dsv4_clamp
-    if (
-        not _warned_dsv4_clamp
-        and swiglu_arg is not None
-        and swiglu_arg.limit is not None
-    ):
-        logger.warning(
-            "Gluon Petit DSV4 uses its unchanged unclamped SiLU operation; "
-            "the configured activation clamp %s is ignored",
-            swiglu_arg.limit,
+    if swiglu_arg is not None and swiglu_arg.limit is not None:
+        raise ValueError(
+            "Gluon Petit DSV4 MegaMoE does not support an activation clamp; "
+            "select a backend that preserves the checkpoint activation"
         )
-        _warned_dsv4_clamp = True
     return profile
 
 
@@ -391,6 +380,7 @@ def gluon_petit_mxfp4_megamoe_weights(plan: dict, w: torch.nn.Module) -> None:
         "supports_deferred_finalize": frozenset({False}),
         "supports_ep": frozenset({True}),
         "supports_all_to_all_ep": frozenset({True}),
+        "a2a_backend": frozenset({"gluon_petit"}),
         "ep_size": frozenset({_WORLD_SIZE}),
         "ispp_alignment": frozenset({1}),
         "internal_activation_dtype": frozenset({"mxfp4"}),

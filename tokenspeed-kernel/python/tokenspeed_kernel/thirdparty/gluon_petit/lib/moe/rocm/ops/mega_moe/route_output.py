@@ -2,7 +2,7 @@
 
 from typing import NamedTuple
 
-from lib.gemm.rocm.amd_intrinsics import (
+from lib.gemm.rocm.intrinsics import (
     BufferResource,
     amdgcn_cvt_pk_bf16_f32,
     amdgcn_pk_add_f32,

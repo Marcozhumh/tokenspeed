@@ -100,7 +100,7 @@ class _TestMoeLayer(torch.nn.Module):
         self.swiglu_arg = (
             argparse.Namespace(alpha=1.702, limit=7.0)
             if profile.has_bias
-            else argparse.Namespace(alpha=None, limit=10.0)
+            else argparse.Namespace(alpha=None, limit=None)
         )
         self.w13_input_layout = "interleaved" if profile.has_bias else "concatenated"
         self.register_parameter(

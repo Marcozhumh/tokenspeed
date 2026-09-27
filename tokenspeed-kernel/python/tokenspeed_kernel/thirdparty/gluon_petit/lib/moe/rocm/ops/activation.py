@@ -1,7 +1,7 @@
 """Production activation operations from moe/rocm/ops/activation.cuh."""
 
 import triton.experimental.gluon as g
-from lib.gemm.rocm.amd_intrinsics import (
+from lib.gemm.rocm.intrinsics import (
     amdgcn_exp2f,
     amdgcn_pk_add_f32,
     amdgcn_pk_mul_f32,

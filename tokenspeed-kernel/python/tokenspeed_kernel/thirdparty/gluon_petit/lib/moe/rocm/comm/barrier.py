@@ -1,7 +1,7 @@
 """Grid and cross-rank synchronization for tensor Gluon kernels."""
 
 import triton.experimental.gluon as g
-from lib.gemm.rocm.amd_intrinsics import (
+from lib.gemm.rocm.intrinsics import (
     BufferResource,
     _native_call,
     amdgcn_ballot,

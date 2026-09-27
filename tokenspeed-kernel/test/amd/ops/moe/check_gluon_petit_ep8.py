@@ -59,7 +59,8 @@ def main() -> None:
     dist.init_process_group("nccl", device_id=device, timeout=timedelta(minutes=10))
     assert dist.get_world_size() == 8
     benchmark_path = (
-        Path(__file__).resolve().parents[3] / "ops" / "moe" / "bench_megamoe.py"
+        Path(__file__).resolve().parents[5]
+        / "benchmarks/amd/gfx950/ops/bench_megamoe.py"
     )
     bench = runpy.run_path(str(benchmark_path))
     petit = load_petit_kernel()

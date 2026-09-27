@@ -4,7 +4,7 @@ from typing import NamedTuple
 
 import triton.experimental.gluon as g
 import triton.language as tl
-from lib.gemm.rocm.amd_intrinsics import (
+from lib.gemm.rocm.intrinsics import (
     BufferResource,
     _native_call,
     amdgcn_shuffle,

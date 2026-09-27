@@ -1,7 +1,7 @@
 """Native cycle-counter profiling helpers."""
 
 import triton.experimental.gluon as g
-from lib.gemm.rocm.amd_intrinsics import _native_call
+from lib.gemm.rocm.intrinsics import _native_call
 from lib.tal.device import DeviceTemplate, device_method
 from triton.experimental.gluon import language as l
 

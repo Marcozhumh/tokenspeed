@@ -1,9 +1,15 @@
-"""Native rank-local work assignment, including M64 stage-one tickets."""
+"""Assign rank-local expert work after dispatch publishes per-expert counts.
+
+Each wave polls its expert counts, prefix-sums the required token blocks, then
+maps a logical ticket to an expert, token block, and projection tile. Stage one
+produces quantized intermediates; stage two consumes the same block ordering.
+The M64 helpers pair adjacent blocks without crossing an expert boundary.
+"""
 
 from enum import IntEnum
 from typing import NamedTuple
 
-from lib.gemm.rocm.amd_intrinsics import (
+from lib.gemm.rocm.intrinsics import (
     BufferResource,
     amdgcn_ballot,
     amdgcn_ctz64,
@@ -56,6 +62,7 @@ class MegaMoETwoStageScheduler(DeviceTemplate):
 
     @device_method
     def FetchRecvSumPerExpert(self, state, wtid):
+        """Wait for all dispatch producers and cache expert counts/block offsets."""
         wtid = l.arange(
             0, 64, layout=l.BlockedLayout([1], [64], [l.num_warps()], [0])
         ).to(l.uint32)
@@ -97,6 +104,7 @@ class MegaMoETwoStageScheduler(DeviceTemplate):
 
     @device_method
     def GetWork(self, state, wtid, logical_id):
+        """Map a projection ticket to Work, returning false after the last tile."""
         wtid = l.arange(
             0, 64, layout=l.BlockedLayout([1], [64], [l.num_warps()], [0])
         ).to(l.uint32)

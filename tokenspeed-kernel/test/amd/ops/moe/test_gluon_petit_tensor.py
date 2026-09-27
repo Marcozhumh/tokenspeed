@@ -27,7 +27,7 @@ from tokenspeed_kernel.thirdparty.gluon_petit import load_petit_kernel
 
 petit_kernel = load_petit_kernel()
 
-from lib.gemm.rocm.amd_intrinsics import (
+from lib.gemm.rocm.intrinsics import (
     amdgcn_cvt_scalef32_pk_fp4_f32,
     amdgcn_s_waitcnt_barrier,
 )

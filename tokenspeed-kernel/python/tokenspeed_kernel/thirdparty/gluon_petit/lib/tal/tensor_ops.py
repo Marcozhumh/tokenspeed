@@ -23,7 +23,7 @@
 """Tensor register views and explicitly masked native memory instructions."""
 
 import triton.experimental.gluon as g
-from lib.gemm.rocm.amd_intrinsics import _native_call, _resource_content
+from lib.gemm.rocm.intrinsics import _native_call, _resource_content
 from triton.experimental.gluon import language as l
 
 

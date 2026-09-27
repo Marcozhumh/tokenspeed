@@ -38,9 +38,10 @@ Select the backend with both `--moe-backend gluon_petit` and
 `--all2all-backend gluon_petit`. It requires one 8-GPU GFX950 node, EP8/TP1,
 BF16 model activations, serialized MXFP4 expert weights, trivial expert
 placement, and no more than 1024 tokens per rank. The registered profiles are
-GPT-OSS 120B and DeepSeek V4. DeepSeek V4 uses Petit's unchanged unclamped
-SiLU operation even when the checkpoint declares an activation clamp; the
-runtime warns when it ignores such a clamp.
+GPT-OSS 120B and the DeepSeek V4 expert geometry with unclamped SiLU.
+Checkpoints declaring a SiLU activation clamp are rejected because this kernel
+cannot preserve that activation. Explicit FP8 activation requests are also
+rejected; this backend quantizes activations to MXFP4.
 
 ## Retained API
 
@@ -90,7 +91,7 @@ Use the full-path benchmark for both `gpt_oss_120b` and `dsv4`:
 
 ```bash
 torchrun --standalone --nproc-per-node=8 \
-  tokenspeed-kernel/test/ops/moe/bench_gluon_petit_megamoe.py \
+  benchmarks/amd/gfx950/ops/bench_gluon_petit_megamoe.py \
   --profile gpt_oss_120b --tokens 8 16 32 64 128 256 512 1024 \
   --mode graph --warmup 20 --repeat 100 --graph-iters 16 --seed 42
 ```

@@ -32,6 +32,7 @@ from tokenspeed_kernel.ops.moe.gluon.petit import (
     gluon_petit_mxfp4_megamoe_apply,
     gluon_petit_mxfp4_megamoe_weights,
 )
+from tokenspeed_kernel.selection import NoKernelFoundError
 
 
 @pytest.mark.parametrize("profile", [_GPT_OSS_120B_PROFILE, _DSV4_PROFILE])
@@ -61,6 +62,29 @@ def test_petit_plan_selects_gluon_registration(profile, mi350_platform) -> None:
     assert plan["apply_kernel_name"] == "gluon_petit_mxfp4_megamoe_apply"
     assert plan["weight_preprocessor"] is gluon_petit_mxfp4_megamoe_weights
     assert plan["a2a_backend"] == "gluon_petit"
+
+
+def test_petit_cannot_replace_explicit_deepep(mi350_platform) -> None:
+    with mock.patch(
+        "tokenspeed_kernel.selection.current_platform", return_value=mi350_platform
+    ), pytest.raises(NoKernelFoundError):
+        moe_plan(
+            "mxfp4",
+            input_dtype=torch.bfloat16,
+            activation="swiglu",
+            routing_mode="precomputed_topk",
+            a2a_backend="deepep",
+            ep_size=8,
+            ispp=2880,
+            hidden=2880,
+            swiglu_form="generalized",
+            activation_clamped=True,
+            expert_id_repeats=False,
+            internal_activation_dtype="mxfp4",
+            with_bias=True,
+            fast_math=True,
+            solution="gluon",
+        )
 
 
 def _gpt_oss_layer() -> SimpleNamespace:
@@ -120,17 +144,10 @@ def test_validate_layer_rejects_noncanonical_gpt_oss_swiglu(
         _validate_layer(layer)
 
 
-def test_validate_layer_accepts_dsv4_clamp_with_one_warning(caplog) -> None:
-    import tokenspeed_kernel.ops.moe.gluon.petit as integration
-
-    with mock.patch.object(integration, "_warned_dsv4_clamp", False):
-        assert _validate_layer(_dsv4_layer(10.0)) == _DSV4_PROFILE
-        assert _validate_layer(_dsv4_layer(10.0)) == _DSV4_PROFILE
-
-    messages = [record.message for record in caplog.records]
-    assert (
-        sum("configured activation clamp 10.0 is ignored" in m for m in messages) == 1
-    )
+def test_validate_layer_preserves_dsv4_activation_contract() -> None:
+    assert _validate_layer(_dsv4_layer(None)) == _DSV4_PROFILE
+    with pytest.raises(ValueError, match="does not support an activation clamp"):
+        _validate_layer(_dsv4_layer(10.0))
 
 
 def test_validate_layer_rejects_unsupported_geometry() -> None:

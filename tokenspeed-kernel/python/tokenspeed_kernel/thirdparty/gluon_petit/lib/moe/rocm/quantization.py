@@ -24,7 +24,7 @@
 
 import triton.experimental.gluon as g
 import triton.language as tl
-from lib.gemm.rocm.amd_intrinsics import amdgcn_cvt_pk_fp8_f32, amdgcn_rcpf
+from lib.gemm.rocm.intrinsics import amdgcn_cvt_pk_fp8_f32, amdgcn_rcpf
 from triton.experimental.gluon import language as l
 
 kQuantBlockK = l.constexpr(128)
@@ -99,7 +99,7 @@ def OnlineQuantize2x128(
 
 from typing import NamedTuple
 
-from lib.gemm.rocm.amd_intrinsics import (
+from lib.gemm.rocm.intrinsics import (
     amdgcn_cvt_scalef32_pk_fp4_f32,
     amdgcn_pk_mul_f32,
 )

@@ -18,42 +18,26 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
-"""CPU-only checks for the full-path Petit benchmark adapter."""
+"""Shared checks for the gfx1250 latent-MoE input projections."""
 
 from __future__ import annotations
 
-import runpy
-import sys
-from pathlib import Path
-from types import ModuleType
 
-import pytest
+def _is_packed_projection_view(packed, router, routed, shared) -> bool:
+    """Whether ``packed`` is exactly the three weights as consecutive rows.
 
-
-@pytest.fixture(scope="module")
-def benchmark() -> dict[str, object]:
-    return runpy.run_path(str(Path(__file__).with_name("bench_megamoe.py")))
-
-
-def test_import_aiter_topk_uses_upstream_function(benchmark, monkeypatch):
-    aiter = ModuleType("aiter")
-    aiter.__path__ = []
-    fused_moe = ModuleType("aiter.fused_moe")
-
-    def fused_topk():
-        pass
-
-    fused_moe.fused_topk = fused_topk
-    monkeypatch.setitem(sys.modules, "aiter", aiter)
-    monkeypatch.setitem(sys.modules, "aiter.fused_moe", fused_moe)
-
-    assert benchmark["import_aiter_topk"]() is fused_topk
-
-
-def test_rank_m_rejects_workspace_overflow(benchmark, monkeypatch):
-    monkeypatch.setattr(sys, "argv", ["bench_megamoe.py"])
-    args = benchmark["parse_args"]()
-    args.rank_m = [1025] + [1] * 7
-
-    with pytest.raises(ValueError, match="at most 1024 tokens per rank"):
-        benchmark["validate_args"](args)
+    The kernels read only ``packed``, so weights that do not live inside it
+    would be silently ignored. Checked here rather than through
+    ``tokenspeed_kernel``: this package must not depend on it.
+    """
+    parts = (router, routed, shared)
+    storage = packed.untyped_storage()
+    if any(part.untyped_storage().data_ptr() != storage.data_ptr() for part in parts):
+        return False
+    address = packed.data_ptr()
+    row_bytes = packed.shape[1] * packed.element_size()
+    for part in parts:
+        if part.data_ptr() != address:
+            return False
+        address += part.shape[0] * row_bytes
+    return address == packed.data_ptr() + packed.shape[0] * row_bytes

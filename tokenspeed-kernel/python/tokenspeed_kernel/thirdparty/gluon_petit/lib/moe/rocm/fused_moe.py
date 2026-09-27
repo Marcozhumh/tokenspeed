@@ -27,7 +27,7 @@ from enum import IntEnum
 from typing import ClassVar
 
 import triton.experimental.gluon as g
-from lib.gemm.rocm.amd_intrinsics import (
+from lib.gemm.rocm.intrinsics import (
     HAS_AMD_SCHED_BARRIER,
     HAS_AMD_SCHED_GROUP_BARRIER,
     amdgcn_sched_barrier,

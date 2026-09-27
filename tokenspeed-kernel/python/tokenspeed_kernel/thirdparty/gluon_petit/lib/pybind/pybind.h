@@ -4,6 +4,10 @@
 #include <cstdint>
 #include <memory>
 namespace causalflow::petit::pybind {
+// Each rank reserves one virtual region containing peer-mapped barrier records,
+// peer-mapped token slots, and private scratch. HIP allocation handles are shared
+// over local sockets; Layout offsets address the same peer order on every rank.
+// Input tensor views borrow this storage and must not outlive the heap.
 class VmmSymmetricHeap {
   public:
     struct Layout {

@@ -258,6 +258,11 @@ class MoELayer(torch.nn.Module):
             internal_activation_dtype = self._internal_activation_dtype_override
 
         if self._spec.use_gluon_petit:
+            if internal_activation_dtype not in {"input", "mxfp4"}:
+                raise ValueError(
+                    "Gluon Petit MegaMoE requires MXFP4 activations; "
+                    f"the requested {internal_activation_dtype} activations are unsupported"
+                )
             # Keep Petit hardware and expert constraints here; ServerArgs checks
             # shared backends, model dtype, and scheduling capacity.
             if not current_platform().is_cdna4:
@@ -355,7 +360,9 @@ class MoELayer(torch.nn.Module):
             ),
             persistent_max_num_tokens_per_gpu=persistent_max_num_tokens_per_gpu,
             solution=moe_backend,
-            fast_math=True,
+            # rl-bitwise promises one reduction order; fast-math epilogues
+            # trade exactly that away.
+            fast_math=global_server_args_dict["numerics"] != "rl-bitwise",
         )
 
         create_layer_weights(

@@ -27,7 +27,7 @@ from typing import NamedTuple
 
 import triton
 import triton.experimental.gluon as g
-from lib.gemm.rocm.amd_intrinsics import (
+from lib.gemm.rocm.intrinsics import (
     BufferResource,
     BufferResourceFields,
     _native_load_vector4,

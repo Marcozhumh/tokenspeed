@@ -3,7 +3,7 @@
 from typing import NamedTuple
 
 import triton.experimental.gluon as g
-from lib.gemm.rocm.amd_intrinsics import BufferResource
+from lib.gemm.rocm.intrinsics import BufferResource
 from lib.moe.rocm.memory_ops import MakeBufferResource
 from lib.tal.device import DeviceTemplate, device_method
 from lib.tal.host_device import host_device
