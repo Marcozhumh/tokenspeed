@@ -1,7 +1,5 @@
 """Native three-launch MegaMoE: dispatch/stage one, stage two, and combine."""
 
-from typing import NamedTuple
-
 import triton.experimental.gluon as g
 import triton.language as tl
 from lib.gemm.rocm.intrinsics import (
@@ -29,7 +27,6 @@ from lib.moe.rocm.ops.mega_moe.route_output import (
 )
 from lib.moe.rocm.ops.mega_moe.token_shuffle_direct_push import DirectPushTokenShuffle
 from lib.moe.rocm.ops.mxfp4_activation import MxFp4ActivationQuantizer, MxFp4Stage2Input
-from lib.moe.rocm.profiler import Profiler, RecordProfile
 from lib.tal.device import DeviceTemplate, device_method
 from lib.tal.tensor_ops import (
     atomic_add,
@@ -41,21 +38,11 @@ from lib.tal.tensor_ops import (
 )
 from triton.experimental.gluon import language as l
 
-kMegaMoEProfileCtas = 3072
-
-
-class Stage1Cycles(NamedTuple):
-    payload_wait: object
-    prepare: object
-    matmul: object
-    quantize_store: object
-    publish: object
-
 
 class MegaMoETwoStageCommComputeKernel(DeviceTemplate):
-    def __init__(self, Config, kExternalInputs=False, kProfile=False):
-        self._key = (Config.cache_key, kExternalInputs, kProfile)
-        self.Config, self.kProfile, self.Profiler = Config, kProfile, Profiler(kProfile)
+    def __init__(self, Config, kExternalInputs):
+        self._key = (Config.cache_key, kExternalInputs)
+        self.Config = Config
         for field in (
             "Input",
             "W13Weights",
@@ -73,7 +60,7 @@ class MegaMoETwoStageCommComputeKernel(DeviceTemplate):
         self.Workspace, self.Scheduler = MegaMoEWorkspace(
             Config
         ), MegaMoETwoStageScheduler(Config)
-        self.TokenDispatch = DirectPushTokenShuffle(Config, kExternalInputs, kProfile)
+        self.TokenDispatch = DirectPushTokenShuffle(Config, kExternalInputs)
         for field in (
             "kNumWarps",
             "kThreads",
@@ -136,8 +123,7 @@ class MegaMoETwoStageCommComputeKernel(DeviceTemplate):
         return l.load(self.WorkId(shm))
 
     @device_method
-    def WaitForPayloadBlocks(self, workspace, work, tid, payload_wait_cycles):
-        start = self.Profiler.Start()
+    def WaitForPayloadBlocks(self, workspace, work, tid):
         subblocks = (work.work_m + self.kSortedTokenBlock - 1) // self.kSortedTokenBlock
         for subblock in range(subblocks):
             rows = l.minimum(
@@ -162,7 +148,6 @@ class MegaMoETwoStageCommComputeKernel(DeviceTemplate):
         l.barrier()
         compiler_memory_barrier()
         l.barrier()
-        return payload_wait_cycles + self.Profiler.End(start)
 
     @device_method
     def RunStage1(
@@ -178,12 +163,8 @@ class MegaMoETwoStageCommComputeKernel(DeviceTemplate):
         tid,
         wid,
         wtid,
-        cycles,
     ):
-        payload_wait = self.WaitForPayloadBlocks(
-            workspace, work, tid, cycles.payload_wait
-        )
-        start = self.Profiler.Start()
+        self.WaitForPayloadBlocks(workspace, work, tid)
         pool_base = work.pool_row
         input_state = self.Input.Initialize(
             workspace.br_, workspace.rank_id_, pool_base, work.work_m, self.Workspace
@@ -204,13 +185,9 @@ class MegaMoETwoStageCommComputeKernel(DeviceTemplate):
         tokens = ()
         for i in l.static_range(self.kTokenBatch):
             tokens += (wid * self.kTokenBatch + i,)
-        prepare = cycles.prepare + self.Profiler.End(start)
-        start = self.Profiler.Start()
         tiles, hidden = self.Stage1Op.Run(
             shm, tiles, tid, wid, wtid, tokens, work.work_m
         )
-        matmul = cycles.matmul + self.Profiler.End(start)
-        start = self.Profiler.Start()
         l.barrier()
         quant_shm = shm.to(l.pointer_type(l.float32, 3))
         self.ActivationQuantizer.StoreAccumulator(quant_shm, hidden, wid, wtid)
@@ -241,8 +218,6 @@ class MegaMoETwoStageCommComputeKernel(DeviceTemplate):
                     route < work.work_m,
                 )
         complete_scoped_vmem()
-        quantize_store = cycles.quantize_store + self.Profiler.End(start)
-        start = self.Profiler.Start()
         l.barrier()
         for subblock in tl.range((work.work_m + 31) // 32, loop_unroll_factor=1):
             prevent_loop_unroll()
@@ -255,8 +230,6 @@ class MegaMoETwoStageCommComputeKernel(DeviceTemplate):
                 is_first_thread(tid),
             )
         l.barrier()
-        publish = cycles.publish + self.Profiler.End(start)
-        return Stage1Cycles(payload_wait, prepare, matmul, quantize_store, publish)
 
     @device_method
     def WaitL2Block(self, workspace, pool_block, tid):
@@ -287,7 +260,6 @@ class MegaMoETwoStageCommComputeKernel(DeviceTemplate):
         tid,
         wid,
         wtid,
-        ready_wait_cycles,
     ):
         pool_base = work.pool_block * self.kRoutesPerBlock
         weights = self.W2Weights.Initialize(
@@ -298,9 +270,7 @@ class MegaMoETwoStageCommComputeKernel(DeviceTemplate):
             tiles, w2_bias, work.expert_idx, work.tile
         )
         accum = ClearMat(tid, self.Stage2Tiles.kAccumFragments)
-        start = self.Profiler.Start()
         self.WaitL2Block(workspace, work.pool_block, tid)
-        ready_wait_cycles += self.Profiler.End(start)
         row, vector = (
             tid // self.Stage2Input.kVectorsPerRow,
             tid % self.Stage2Input.kVectorsPerRow,
@@ -337,7 +307,6 @@ class MegaMoETwoStageCommComputeKernel(DeviceTemplate):
         self.Stage2Epilogue.WriteShm(shm, accum, wid, wtid)
         l.barrier()
         self.Stage2Epilogue.WriteBack(context, shm, tile_col, wid, wtid)
-        return ready_wait_cycles
 
     @device_method
     def ComputeStage1Only(
@@ -354,18 +323,11 @@ class MegaMoETwoStageCommComputeKernel(DeviceTemplate):
         tid,
         wid,
         wtid,
-        profile,
     ):
-        zero = l.full((), 0, l.uint64)
-        scheduler_cycles, work_cycles, work_count = zero, zero, zero
-        cycles = Stage1Cycles(zero, zero, zero, zero, zero)
-        loop_start = self.Profiler.Start()
         valid = l.full((), True, l.int1)
         while valid:
-            item_start = self.Profiler.Start()
             logical_id = self.NextDynamicWork(workspace, shm, sm_id, tid, 0)
             valid, work = self.Scheduler.GetStage1Work(scheduler, wtid, logical_id)
-            scheduler_cycles += self.Profiler.End(item_start)
             if valid:
                 phase = amdgcn_readfirstlane(work.phase)
                 valid = phase == 0
@@ -378,8 +340,7 @@ class MegaMoETwoStageCommComputeKernel(DeviceTemplate):
                         amdgcn_readfirstlane(work.work_m),
                         amdgcn_readfirstlane(work.tile),
                     )
-                    item_start = self.Profiler.Start()
-                    cycles = self.RunStage1(
+                    self.RunStage1(
                         workspace,
                         shm,
                         dispatch,
@@ -391,23 +352,7 @@ class MegaMoETwoStageCommComputeKernel(DeviceTemplate):
                         tid,
                         wid,
                         wtid,
-                        cycles,
                     )
-                    work_cycles += self.Profiler.End(item_start)
-                    work_count += 1
-        RecordProfile(
-            profile, 3, self.Profiler.End(loop_start), tid, sm_id, self.kProfile, 3072
-        )
-        RecordProfile(profile, 4, scheduler_cycles, tid, sm_id, self.kProfile, 3072)
-        RecordProfile(profile, 5, cycles.payload_wait, tid, sm_id, self.kProfile, 3072)
-        RecordProfile(profile, 6, work_cycles, tid, sm_id, self.kProfile, 3072)
-        RecordProfile(profile, 7, work_count, tid, sm_id, self.kProfile, 3072)
-        RecordProfile(profile, 20, cycles.prepare, tid, sm_id, self.kProfile, 3072)
-        RecordProfile(profile, 21, cycles.matmul, tid, sm_id, self.kProfile, 3072)
-        RecordProfile(
-            profile, 22, cycles.quantize_store, tid, sm_id, self.kProfile, 3072
-        )
-        RecordProfile(profile, 23, cycles.publish, tid, sm_id, self.kProfile, 3072)
 
     @device_method
     def ComputeStage2Only(
@@ -422,22 +367,11 @@ class MegaMoETwoStageCommComputeKernel(DeviceTemplate):
         tid,
         wid,
         wtid,
-        profile,
     ):
-        zero = l.full((), 0, l.uint64)
-        scheduler_cycles, ready_wait_cycles, work_cycles, work_count = (
-            zero,
-            zero,
-            zero,
-            zero,
-        )
-        loop_start = self.Profiler.Start()
         stage2_id = sm_id
         valid = l.full((), True, l.int1)
         while valid:
-            item_start = self.Profiler.Start()
             valid, work = self.Scheduler.GetStage2Work(scheduler, wtid, stage2_id)
-            scheduler_cycles += self.Profiler.End(item_start)
             if valid:
                 work = Work(
                     work.phase,
@@ -447,8 +381,7 @@ class MegaMoETwoStageCommComputeKernel(DeviceTemplate):
                     amdgcn_readfirstlane(work.work_m),
                     amdgcn_readfirstlane(work.tile),
                 )
-                item_start = self.Profiler.Start()
-                ready_wait_cycles = self.RunStage2(
+                self.RunStage2(
                     workspace,
                     shm,
                     w2,
@@ -458,18 +391,8 @@ class MegaMoETwoStageCommComputeKernel(DeviceTemplate):
                     tid,
                     wid,
                     wtid,
-                    ready_wait_cycles,
                 )
-                work_cycles += self.Profiler.End(item_start)
-                work_count += 1
                 stage2_id += self.kStage2GridBlocks
-        RecordProfile(
-            profile, 8, self.Profiler.End(loop_start), tid, sm_id, self.kProfile, 3072
-        )
-        RecordProfile(profile, 9, scheduler_cycles, tid, sm_id, self.kProfile, 3072)
-        RecordProfile(profile, 10, ready_wait_cycles, tid, sm_id, self.kProfile, 3072)
-        RecordProfile(profile, 11, work_cycles, tid, sm_id, self.kProfile, 3072)
-        RecordProfile(profile, 12, work_count, tid, sm_id, self.kProfile, 3072)
 
     @device_method
     def RunStage1Kernel(
@@ -483,39 +406,27 @@ class MegaMoETwoStageCommComputeKernel(DeviceTemplate):
         input_tokens,
         input_topk_ids,
         input_topk_weights,
-        profile,
         shm,
         sm_id,
         tid,
     ):
+        """Dispatch this rank's inputs and execute local experts' first projection.
+
+        All CTAs participate in dispatch admission, including empty ranks.
+        Compute waits for routed payloads, then publishes activated MXFP4
+        intermediates and readiness flags in the workspace for stage two.
+        """
         wid, wtid = tid // 64, tid % 64
         workspace = self.Workspace.Initialize(base, rank)
-        total_start = self.Profiler.Start()
-        phase_start = self.Profiler.Start()
         dispatch = self.TokenDispatch.Construct(
             num_tokens, workspace, shm, input_tokens, input_topk_ids, input_topk_weights
         )
-        dispatch, dispatch_epoch, dispatch_profile = self.TokenDispatch.Run(
+        dispatch, dispatch_epoch = self.TokenDispatch.Run(
             dispatch, sm_id, tid, wid, wtid
         )
-        RecordProfile(
-            profile, 0, self.Profiler.End(phase_start), tid, sm_id, self.kProfile, 3072
-        )
-        for i in l.static_range(11):
-            RecordProfile(
-                profile, 24 + i, dispatch_profile[i], tid, sm_id, self.kProfile, 3072
-            )
-        phase_start = self.Profiler.Start()
         self.TokenDispatch.WaitForLocalPlan(dispatch, dispatch_epoch, tid)
-        RecordProfile(
-            profile, 1, self.Profiler.End(phase_start), tid, sm_id, self.kProfile, 3072
-        )
-        phase_start = self.Profiler.Start()
         scheduler = self.Scheduler.Construct(workspace)
         scheduler = self.Scheduler.FetchRecvSumPerExpert(scheduler, wtid)
-        RecordProfile(
-            profile, 2, self.Profiler.End(phase_start), tid, sm_id, self.kProfile, 3072
-        )
         self.ComputeStage1Only(
             workspace,
             scheduler,
@@ -529,10 +440,6 @@ class MegaMoETwoStageCommComputeKernel(DeviceTemplate):
             tid,
             wid,
             wtid,
-            profile,
-        )
-        RecordProfile(
-            profile, 18, self.Profiler.End(total_start), tid, sm_id, self.kProfile, 3072
         )
 
     @device_method
@@ -545,14 +452,17 @@ class MegaMoETwoStageCommComputeKernel(DeviceTemplate):
         w2_bias,
         base,
         rank,
-        profile,
         shm,
         sm_id,
         tid,
     ):
+        """Consume ready intermediates and publish weighted expert contributions.
+
+        Stage one must precede this launch on the same stream. Contributions
+        are written to source-rank workspace slots; combine produces the output.
+        """
         wid, wtid = tid // 64, tid % 64
         workspace = self.Workspace.Initialize(base, rank)
-        total_start = self.Profiler.Start()
         scheduler = self.Scheduler.Construct(workspace)
         scheduler = self.Scheduler.FetchRecvSumPerExpert(scheduler, wtid)
         self.ComputeStage2Only(
@@ -566,38 +476,32 @@ class MegaMoETwoStageCommComputeKernel(DeviceTemplate):
             tid,
             wid,
             wtid,
-            profile,
-        )
-        RecordProfile(
-            profile, 19, self.Profiler.End(total_start), tid, sm_id, self.kProfile, 3072
         )
 
 
 class MegaMoECombineKernel(DeviceTemplate):
     kNumSMs, kNumWarps, kThreads, kOutputHandoffGridSyncIndex = 128, 8, 512, 4
 
-    def __init__(self, Config, kProfile=False):
-        self._key = (Config.cache_key, kProfile)
+    def __init__(self, Config):
+        self._key = (Config.cache_key,)
         self.Config, self.Workspace = Config, MegaMoEWorkspace(Config)
-        self.kProfile, self.Profiler = kProfile, Profiler(kProfile)
         self.Reducer = SourceRouteReducer(Config, self.kNumSMs, self.kThreads)
 
     @device_method
-    def Run(self, out, num_tokens, output_row_stride, base, rank, profile, sm_id, tid):
+    def Run(self, out, num_tokens, output_row_stride, base, rank, sm_id, tid):
+        """Synchronize stage-two writes across ranks and reduce local token routes.
+
+        Every rank participates in the epoch handoff, even with zero tokens.
+        The reducer writes BF16 rows to out, using output_row_stride elements.
+        """
         wid, wtid = tid // 64, tid % 64
         workspace = self.Workspace.Initialize(base, rank)
-        total_start = self.Profiler.Start()
-        phase_start = self.Profiler.Start()
         dispatch_epoch = BufferResource.LoadU32(
             workspace.br_,
             self.Workspace.DirectPushEpochGateOffset(workspace.rank_id_),
             0,
             BufferResource.kSC0Bit | BufferResource.kSC1Bit,
         )
-        RecordProfile(
-            profile, 13, self.Profiler.End(phase_start), tid, sm_id, self.kProfile, 3072
-        )
-        phase_start = self.Profiler.Start()
         tensor_grid_sync(
             self.Workspace,
             workspace,
@@ -607,10 +511,6 @@ class MegaMoECombineKernel(DeviceTemplate):
             False,
             True,
         )
-        RecordProfile(
-            profile, 14, self.Profiler.End(phase_start), tid, sm_id, self.kProfile, 3072
-        )
-        phase_start = self.Profiler.Start()
         if wave_id() == 0:
             if sm_id == 0:
                 system_fence_acquire()
@@ -639,18 +539,8 @@ class MegaMoECombineKernel(DeviceTemplate):
             )
             wave_barrier()
         l.barrier()
-        RecordProfile(
-            profile, 15, self.Profiler.End(phase_start), tid, sm_id, self.kProfile, 3072
-        )
-        phase_start = self.Profiler.Start()
         self.Reducer.Run(
             workspace, out, num_tokens, output_row_stride, sm_id, wid, wtid
-        )
-        RecordProfile(
-            profile, 16, self.Profiler.End(phase_start), tid, sm_id, self.kProfile, 3072
-        )
-        RecordProfile(
-            profile, 17, self.Profiler.End(total_start), tid, sm_id, self.kProfile, 3072
         )
 
 
@@ -666,7 +556,6 @@ def _stage1(
     input_tokens,
     input_topk_ids,
     input_topk_weights,
-    profile,
     shm,
     sm_id,
     tid,
@@ -681,7 +570,6 @@ def _stage1(
         input_tokens,
         input_topk_ids,
         input_topk_weights,
-        profile,
         shm,
         sm_id,
         tid,
@@ -689,12 +577,8 @@ def _stage1(
 
 
 @g.jit
-def _stage2(
-    Kernel: l.constexpr, w2, scales_w2, w2_bias, base, rank, profile, shm, sm_id, tid
-):
-    Kernel.RunStage2Kernel(
-        None, w2, scales_w2, 0, w2_bias, base, rank, profile, shm, sm_id, tid
-    )
+def _stage2(Kernel: l.constexpr, w2, scales_w2, w2_bias, base, rank, shm, sm_id, tid):
+    Kernel.RunStage2Kernel(None, w2, scales_w2, 0, w2_bias, base, rank, shm, sm_id, tid)
 
 
 @g.jit
@@ -705,11 +589,10 @@ def _combine(
     output_row_stride,
     base,
     rank,
-    profile,
     sm_id,
     tid,
 ):
-    Kernel.Run(out, num_tokens, output_row_stride, base, rank, profile, sm_id, tid)
+    Kernel.Run(out, num_tokens, output_row_stride, base, rank, sm_id, tid)
 
 
 @g.jit
@@ -724,12 +607,15 @@ def MegaMoEStage1(
     input_topk_ids,
     input_topk_weights,
     Kernel: l.constexpr,
-    profile=None,
 ):
-    """Dispatch local routes and produce quantized W13 intermediates on all ranks.
+    """Dispatch inputs, apply W13 and activation, and publish MXFP4 intermediates.
 
-    Every rank participates, including ranks with no input tokens. The caller
-    supplies initialized symmetric storage and launches stage two on this stream.
+    Weights, scales and optional bias must match Kernel's packed expert layout.
+    The three input pointers supply packed local tokens, expert IDs and routing
+    weights when external inputs are enabled; otherwise inputs reside in base.
+    The caller supplies initialized symmetric workspace in base and launches
+    Kernel.kNumSMs CTAs on every rank, including ranks with num_tokens == 0.
+    Results remain in the workspace; stage two must follow on the same stream.
     """
     tid = l.arange(
         0, Kernel.kThreads, layout=l.BlockedLayout([1], [64], [Kernel.kNumWarps], [0])
@@ -751,7 +637,6 @@ def MegaMoEStage1(
         input_tokens,
         input_topk_ids,
         input_topk_weights,
-        profile,
         shm,
         l.program_id(0).to(l.uint32),
         tid,
@@ -760,10 +645,14 @@ def MegaMoEStage1(
 
 
 @g.jit
-def MegaMoEStage2(
-    w2, scales_w2, w2_bias, base, rank, Kernel: l.constexpr, profile=None
-):
-    """Consume stage-one blocks, project W2, and return contributions to peers."""
+def MegaMoEStage2(w2, scales_w2, w2_bias, base, rank, Kernel: l.constexpr):
+    """Project stage-one intermediates through W2 and return weighted routes.
+
+    Weights, scales and optional bias must match Kernel's packed expert layout.
+    Launch Kernel.kStage2GridBlocks CTAs after stage one on the same stream,
+    with the same symmetric workspace and rank. Every rank participates,
+    including empty ranks. Results go to source-rank workspace slots for combine.
+    """
     tid = l.arange(
         0, Kernel.kThreads, layout=l.BlockedLayout([1], [64], [Kernel.kNumWarps], [0])
     ).to(l.uint32)
@@ -780,7 +669,6 @@ def MegaMoEStage2(
         w2_bias,
         base,
         rank,
-        profile,
         shm,
         l.program_id(0).to(l.uint32),
         tid,
@@ -789,10 +677,14 @@ def MegaMoEStage2(
 
 
 @g.jit
-def MegaMoECombine(
-    out, num_tokens, output_row_stride, base, rank, Kernel: l.constexpr, profile=None
-):
-    """Wait for peer contributions and combine routes into rank-local BF16 rows."""
+def MegaMoECombine(out, num_tokens, output_row_stride, base, rank, Kernel: l.constexpr):
+    """Sum peer contributions in FP32 into num_tokens rank-local BF16 rows.
+
+    Launch Kernel.kNumSMs CTAs after stage two on the same stream and workspace.
+    All ranks join the completion handshake, including ranks with no tokens.
+    Writes out in place with output_row_stride measured in BF16 elements.
+    Empty ranks write no output. There is no returned value.
+    """
     tid = l.arange(
         0, Kernel.kThreads, layout=l.BlockedLayout([1], [64], [Kernel.kNumWarps], [0])
     ).to(l.uint32)
@@ -803,12 +695,6 @@ def MegaMoECombine(
         output_row_stride,
         base,
         rank,
-        profile,
         l.program_id(0).to(l.uint32),
         tid,
     )
-
-
-MegaMoEStage1Profile = MegaMoEStage1
-MegaMoEStage2Profile = MegaMoEStage2
-MegaMoECombineProfile = MegaMoECombine

@@ -31,8 +31,6 @@ from lib.moe.rocm.mega_moe_config_selector import (
 from lib.moe.rocm.quantization import MxFp4Scale, NativeMxFp4Quantization
 from triton.experimental.gluon import language as l
 
-kMegaMoEProfileCtas, kMegaMoEProfileCounterCount = 3072, 35
-
 
 @dataclass
 class MegaMoEParams:
@@ -53,7 +51,6 @@ class MegaMoEParams:
     workspace: object
     rank: int
     stream: object = None
-    profile: object = None
 
 
 @dataclass(frozen=True)
@@ -129,7 +126,7 @@ class MegaMoESolutionAdapter:
         self.Workspace = MegaMoEWorkspace(self.Config)
 
     @cache
-    def Kernels(self, external, profile, m64, w8):
+    def Kernels(self, external, m64, w8):
         Config = self.Config
         SelectedStage1 = (
             MegaMoEStage1M64W8Config(Config)
@@ -137,9 +134,9 @@ class MegaMoESolutionAdapter:
             else MegaMoEStage1M64W4Config(Config) if m64 else Config
         )
         return (
-            MegaMoETwoStageCommComputeKernel(SelectedStage1, external, profile),
-            MegaMoETwoStageCommComputeKernel(Config, external, profile),
-            MegaMoECombineKernel(Config, profile),
+            MegaMoETwoStageCommComputeKernel(SelectedStage1, external),
+            MegaMoETwoStageCommComputeKernel(Config, external),
+            MegaMoECombineKernel(Config),
         )
 
     def GetWorkspaceInfo(self, rank):
@@ -184,7 +181,6 @@ class MegaMoESolutionAdapter:
         kM64W8MinTokens = 1024 if C.kNumExperts == 128 else kM64MinTokens
         stage1, stage2, combine = self.Kernels(
             external_input_count == 3,
-            p.profile is not None,
             p.num_tokens >= kM64MinTokens,
             p.num_tokens >= kM64W8MinTokens,
         )
@@ -203,7 +199,6 @@ class MegaMoESolutionAdapter:
                 p.input_topk_ids,
                 p.input_topk_weights,
                 stage1,
-                p.profile,
                 num_warps=stage1.kNumWarps,
                 enable_fp_fusion=False,
             )
@@ -214,7 +209,6 @@ class MegaMoESolutionAdapter:
                 p.workspace,
                 p.rank,
                 stage2,
-                p.profile,
                 num_warps=stage2.kNumWarps,
                 enable_fp_fusion=False,
             )
@@ -225,7 +219,6 @@ class MegaMoESolutionAdapter:
                 p.workspace,
                 p.rank,
                 combine,
-                p.profile,
                 num_warps=combine.kNumWarps,
                 enable_fp_fusion=False,
             )

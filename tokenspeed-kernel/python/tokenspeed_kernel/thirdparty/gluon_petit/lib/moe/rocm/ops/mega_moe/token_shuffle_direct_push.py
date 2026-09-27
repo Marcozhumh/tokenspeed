@@ -2,7 +2,6 @@
 
 from typing import NamedTuple
 
-import triton.experimental.gluon as g
 import triton.language as tl
 from lib.gemm.rocm.intrinsics import (
     BufferResource,
@@ -20,7 +19,6 @@ from lib.moe.rocm.comm.barrier import (
 from lib.moe.rocm.mega_moe.workspace import MegaMoEWorkspace
 from lib.moe.rocm.memory_ops import MakeBufferResource
 from lib.moe.rocm.ops.mega_moe.token_shuffle_common import TokenShuffleCommon
-from lib.moe.rocm.profiler import Profiler
 from lib.tal.device import DeviceTemplate, device_method
 from lib.tal.tensor_ops import (
     atomic_add,
@@ -41,26 +39,6 @@ class Shm(NamedTuple):
     payload_plan: object
 
 
-class Profile(NamedTuple):
-    owner_admission: object
-    owner_count: object
-    owner_plan: object
-    producer_admission_wait: object
-    producer_plan_wait: object
-    producer_payload: object
-    producer_rows: object
-    producer_row_copy: object
-    producer_publish: object
-    producer_fragments: object
-    producer_publish_blocks: object
-
-
-@g.jit
-def _profile_set(profile, index: l.constexpr, value):
-    p = profile[:index] + (value,) + profile[index + 1 :]
-    return Profile(p[0], p[1], p[2], p[3], p[4], p[5], p[6], p[7], p[8], p[9], p[10])
-
-
 class DirectPushState(NamedTuple):
     num_tokens_: object
     workspace_: object
@@ -72,13 +50,12 @@ class DirectPushState(NamedTuple):
 
 
 class DirectPushTokenShuffle(DeviceTemplate):
-    def __init__(self, Config, kExternalInputs=False, kProfile=False):
-        self._key = (Config.cache_key, kExternalInputs, kProfile)
+    def __init__(self, Config, kExternalInputs):
+        self._key = (Config.cache_key, kExternalInputs)
         self.Workspace, self.Common = MegaMoEWorkspace(Config), TokenShuffleCommon(
             Config
         )
-        self.kExternalInputs, self.kProfile = kExternalInputs, kProfile
-        self.Profiler = Profiler(kProfile)
+        self.kExternalInputs = kExternalInputs
         self.kNumSMs, self.kThreads, self.kTopK = (
             Config.kNumSMs,
             Config.kThreads,
@@ -143,13 +120,7 @@ class DirectPushTokenShuffle(DeviceTemplate):
         )
 
     @device_method
-    def EmptyProfile(self):
-        z = l.full((), 0, l.uint64)
-        return Profile(z, z, z, z, z, z, z, z, z, z, z)
-
-    @device_method
     def Run(self, state, block, tid, wid, wtid):
-        profile = self.EmptyProfile()
         generation = atomic_add(
             state.workspace_.br_,
             self.Workspace.DirectPushEntryCountOffset(state.workspace_.rank_id_, block),
@@ -177,26 +148,12 @@ class DirectPushTokenShuffle(DeviceTemplate):
         parity, expected = epoch & 1, self.Expected(epoch)
         owner = block == 0
         if owner:
-            phase_profiler = self.Profiler.Start()
             self.AdmitLaunch(state, tid, epoch)
-            if self.kProfile:
-                profile = _profile_set(profile, 0, self.Profiler.End(phase_profiler))
-            phase_profiler = self.Profiler.Start()
             self.PopulateSendCounters(state, tid, parity, expected)
-            if self.kProfile:
-                profile = _profile_set(profile, 1, self.Profiler.End(phase_profiler))
-            phase_profiler = self.Profiler.Start()
             self.BuildDestinationPlan(state, tid, wid, wtid, parity, expected)
-            if self.kProfile:
-                profile = _profile_set(profile, 2, self.Profiler.End(phase_profiler))
         elif block <= self.kProducerBlocks:
-            admission_profiler = self.Profiler.Start()
             self.WaitForOwnerAdmission(state, epoch, tid)
-            if self.kProfile:
-                profile = _profile_set(
-                    profile, 3, self.Profiler.End(admission_profiler)
-                )
-            profile = self.PushPayload(
+            self.PushPayload(
                 state,
                 block - 1,
                 tid,
@@ -204,10 +161,9 @@ class DirectPushTokenShuffle(DeviceTemplate):
                 wtid,
                 parity,
                 expected,
-                profile,
                 self.kProducerBlocks,
             )
-        return state, epoch, profile
+        return state, epoch
 
     @device_method
     def LoadLocalNumTokens(self, state, lane):
@@ -667,11 +623,9 @@ class DirectPushTokenShuffle(DeviceTemplate):
         wtid,
         parity,
         expected,
-        profile,
         kDispatchBlocks: l.constexpr,
     ):
         destination = producer_slot % self.kNumRanks
-        phase_profiler = self.Profiler.Start()
         wait_xgpu_signal_relaxed(
             state.workspace_,
             self.Workspace.DirectPushPlanReadyOffset(
@@ -680,9 +634,6 @@ class DirectPushTokenShuffle(DeviceTemplate):
             expected.to(l.int32),
         )
         l.barrier()
-        if self.kProfile:
-            profile = _profile_set(profile, 4, self.Profiler.End(phase_profiler))
-        phase_profiler = self.Profiler.Start()
         if kDispatchBlocks == 56 and kDispatchBlocks >= self.kNumRanks:
             kProducersPerDestination: l.constexpr = kDispatchBlocks // self.kNumRanks
             destination_producer = producer_slot // self.kNumRanks
@@ -732,11 +683,7 @@ class DirectPushTokenShuffle(DeviceTemplate):
                         plan[0] * worker // workers,
                         plan[0] * (worker + 1) // workers,
                     )
-                    if self.kProfile:
-                        profile = _profile_set(
-                            profile, 6, profile.producer_rows + end - begin
-                        )
-                    profile = self.CopyPayloadRows(
+                    self.CopyPayloadRows(
                         state,
                         destination,
                         local_expert,
@@ -746,20 +693,15 @@ class DirectPushTokenShuffle(DeviceTemplate):
                         tid,
                         wid,
                         wtid,
-                        profile,
                     )
-            if self.kProfile:
-                profile = _profile_set(profile, 5, self.Profiler.End(phase_profiler))
-            return profile
+            return
 
         for task_index in range(producer_slot, self.kNumExperts, kDispatchBlocks):
             fallback_local_expert = task_index // self.kNumRanks
             plan = self.LoadPayloadPlan(
                 state, destination, fallback_local_expert, parity, tid
             )
-            if self.kProfile:
-                profile = _profile_set(profile, 6, profile.producer_rows + plan[0])
-            profile = self.CopyPayloadRows(
+            self.CopyPayloadRows(
                 state,
                 destination,
                 fallback_local_expert,
@@ -769,11 +711,7 @@ class DirectPushTokenShuffle(DeviceTemplate):
                 tid,
                 wid,
                 wtid,
-                profile,
             )
-        if self.kProfile:
-            profile = _profile_set(profile, 5, self.Profiler.End(phase_profiler))
-        return profile
 
     @device_method
     def LoadPayloadPlan(self, state, destination, local_expert, parity, tid):
@@ -802,12 +740,8 @@ class DirectPushTokenShuffle(DeviceTemplate):
         tid,
         wid,
         wtid,
-        profile,
     ):
         rows = ordinal_end - ordinal_begin
-        if self.kProfile:
-            profile = _profile_set(profile, 9, profile.producer_fragments + 1)
-        phase_profiler = self.Profiler.Start()
         if rows >= self.kThreads // 64 * 2:
             for ordinal in range(
                 ordinal_begin + wave_id(), ordinal_end, self.kThreads // 64
@@ -838,13 +772,6 @@ class DirectPushTokenShuffle(DeviceTemplate):
                     self.kThreads,
                     tid == 0,
                 )
-        if self.kProfile:
-            profile = _profile_set(
-                profile,
-                7,
-                profile.producer_row_copy + self.Profiler.End(phase_profiler),
-            )
-        phase_profiler = self.Profiler.Start()
         complete_scoped_vmem()
         l.barrier()
         first, end = pool_base + ordinal_begin, pool_base + ordinal_end
@@ -854,8 +781,6 @@ class DirectPushTokenShuffle(DeviceTemplate):
             loop_unroll_factor=1,
         ):
             prevent_loop_unroll()
-            if self.kProfile:
-                profile = _profile_set(profile, 10, profile.producer_publish_blocks + 1)
             block_first = pool_block * self.kSortedTokenBlock
             lo = l.where(first > block_first, first - block_first, 0)
             block_end = block_first + self.kSortedTokenBlock
@@ -871,11 +796,6 @@ class DirectPushTokenShuffle(DeviceTemplate):
                 tid == 0,
             )
         l.barrier()
-        if self.kProfile:
-            profile = _profile_set(
-                profile, 8, profile.producer_publish + self.Profiler.End(phase_profiler)
-            )
-        return profile
 
     @device_method
     def LoadInputExpert(self, state, route):

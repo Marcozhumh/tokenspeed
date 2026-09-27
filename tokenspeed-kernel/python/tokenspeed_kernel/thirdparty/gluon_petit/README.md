@@ -100,18 +100,3 @@ Compare repeated paired runs with the same environment and report `total_ms`.
 When evaluating the tensor conversion, keep the original baseline results and
 also compare against a baseline with only the partial scale-load predicate fix;
 that separates the correctness repair from execution-path differences.
-
-## Kernel phase profiling
-
-The full-path `bench_megamoe.py` benchmark accepts `--petit-profile-samples N`
-to collect per-CTA phase counters after its normal timing run. These counters
-separate payload waits, matrix computation, quantization, publication, and
-combine synchronization within the fused launches. `collect_petit_profile`
-gathers samples across ranks and reports critical-CTA cycle counts and work
-counts, including p50/p90 summaries. Whole-launch timings do not expose those
-internal waits or cross-rank imbalance.
-
-The cycle-counter helpers in `lib/moe/rocm/profiler.py` remain for this benchmark
-consumer. Normal execution passes no profiling buffer and selects the no-op
-profiler at compile time. A Proton replacement should preserve these per-phase
-and cross-rank diagnostics before removing the counters.
