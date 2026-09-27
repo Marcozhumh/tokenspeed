@@ -90,7 +90,9 @@ def test_gluon_petit_compiler_contract() -> None:
         ),
     ),
 )
+@pytest.mark.parametrize("num_tokens", (1, 256, 1024))
 def test_supported_mega_moe_profiles_compile(
+    num_tokens: int,
     num_experts: int,
     topk: int,
     model_dim: int,
@@ -108,8 +110,13 @@ def test_supported_mega_moe_profiles_compile(
         inter_dim=3072,
         has_bias=has_bias,
     )
-    adapter = mega_moe._MegaMoESolutions()[config._solution_id_for_tokens(1)]
-    stage1, stage2, combine = adapter.Kernels(True, False, False, False)
+    adapter = mega_moe._MegaMoESolutions()[config._solution_id_for_tokens(num_tokens)]
+    stage1, stage2, combine = adapter.Kernels(
+        True,
+        False,
+        num_tokens >= 256,
+        num_tokens >= (1024 if num_experts == 128 else 256),
+    )
     device = torch.device("cuda", 0)
     uint8 = torch.empty(1, dtype=torch.uint8, device=device)
     int32 = torch.empty(1, dtype=torch.int32, device=device)
@@ -121,7 +128,7 @@ def test_supported_mega_moe_profiles_compile(
         mega_moe.MegaMoEStage1.warmup(
             uint8,
             uint8,
-            1,
+            num_tokens,
             bias,
             uint8,
             0,
@@ -148,7 +155,7 @@ def test_supported_mega_moe_profiles_compile(
         ),
         mega_moe.MegaMoECombine.warmup(
             bfloat16,
-            1,
+            num_tokens,
             config.compute_model_dim,
             uint8,
             0,
@@ -160,7 +167,12 @@ def test_supported_mega_moe_profiles_compile(
         ),
     )
 
-    assert [kernel.metadata.shared for kernel in compiled] == [32784, 32784, 0]
+    assert [kernel.metadata.shared for kernel in compiled] == [
+        65552 if num_tokens >= 256 else 32784,
+        32784,
+        0,
+    ]
+    assert all("thread_device.ll" not in kernel.asm["ttgir"] for kernel in compiled)
     assert all(kernel.metadata.triton_version == "3.8.0" for kernel in compiled)
 
 

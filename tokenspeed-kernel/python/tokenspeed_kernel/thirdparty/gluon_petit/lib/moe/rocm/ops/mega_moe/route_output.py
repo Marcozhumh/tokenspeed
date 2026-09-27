@@ -9,9 +9,9 @@ from lib.gemm.rocm.amd_intrinsics import (
     amdgcn_readfirstlane,
 )
 from lib.moe.rocm.mega_moe.workspace import MegaMoEWorkspace
-from lib.moe.rocm.memory_ops import _store_vector4
 from lib.moe.rocm.ops.op_stages import TwoStageStage2Epilogue
 from lib.tal.device import DeviceTemplate, device_method
+from lib.tal.tensor_ops import load_words, store_vector4
 from triton.experimental.gluon import language as l
 
 
@@ -56,16 +56,16 @@ class MegaMoETwoStage2Epilogue(TwoStageStage2Epilogue):
         for row_group in l.static_range(self.kTileRows // self.kNumWarps):
             row = wid + row_group * self.kNumWarps
             valid = row < context.work_m
-            metadata = (l.full((), 0, l.uint32), l.full((), 0, l.uint32))
-            if valid:
-                metadata = BufferResource.LoadU64(
-                    context.workspace.br_,
-                    0,
-                    self.Workspace.TokenMetadataOffset(
-                        context.workspace.rank_id_, context.pool_base + row
-                    ),
-                    self.kPayloadLoadAux,
-                )
+            metadata = load_words(
+                context.workspace.br_,
+                0,
+                self.Workspace.TokenMetadataOffset(
+                    context.workspace.rank_id_, context.pool_base + row
+                ),
+                2,
+                self.kPayloadLoadAux,
+                valid,
+            )
             src_rank = amdgcn_readfirstlane(metadata[1])
             token_topk_idx = amdgcn_readfirstlane(metadata[0])
             output_row = BufferResource.WithOffset(
@@ -127,14 +127,21 @@ class SourceRouteReducer(DeviceTemplate):
             vecs_per_wave = l.full((), 64, l.uint32)
         total_wave_tasks = num_tokens * waves_per_token
         owner = self.Workspace.RouteOutputBufferOffset(workspace.rank_id_)
-        for wave_task in range(global_wave, total_wave_tasks, kTotalWaves):
+        block_wave_base = sm_id * kWarpsPerBlock
+        if self.kNumRanks == 1:
+            block_wave_base = l.where(num_tokens == 8, sm_id, block_wave_base)
+        for task_base in range(block_wave_base, total_wave_tasks, kTotalWaves):
+            wave_task = task_base + global_wave - block_wave_base
+            task_valid = wave_task < total_wave_tasks
             token = wave_task // waves_per_token
             wave_in_token = wave_task % waves_per_token
-            vec_in_wave = wtid
-            while (
-                vec_in_wave < vecs_per_wave
-                and wave_in_token * vecs_per_wave + vec_in_wave < self.kVecCols
-            ):
+            for vec_base in range(0, vecs_per_wave, 64):
+                vec_in_wave = vec_base + wtid
+                valid = (
+                    task_valid
+                    & (vec_in_wave < vecs_per_wave)
+                    & (wave_in_token * vecs_per_wave + vec_in_wave < self.kVecCols)
+                )
                 vec_col = wave_in_token * vecs_per_wave + vec_in_wave
                 col_offset = vec_col * 16
                 route_row_offset = owner + token * self.kTopK * self.kHiddenSize * 2
@@ -144,11 +151,13 @@ class SourceRouteReducer(DeviceTemplate):
                         route_row_offset + topk * self.kHiddenSize * 2
                     )
                     route_values += (
-                        BufferResource.Load(
+                        load_words(
                             workspace.br_,
                             col_offset,
                             row_offset,
+                            4,
                             BufferResource.kSC1Bit | BufferResource.kNTBit,
+                            valid,
                         ),
                     )
                 zero = l.full((), 0.0, l.float32)
@@ -167,10 +176,10 @@ class SourceRouteReducer(DeviceTemplate):
                     packed_output += (
                         amdgcn_cvt_pk_bf16_f32(accum[pair][0], accum[pair][1]),
                     )
-                _store_vector4(
+                store_vector4(
                     output.to(l.pointer_type(l.uint32))
                     + (token * (output_row_stride // self.kElementsPerVec) + vec_col)
                     * 4,
                     packed_output,
+                    valid,
                 )
-                vec_in_wave += 64

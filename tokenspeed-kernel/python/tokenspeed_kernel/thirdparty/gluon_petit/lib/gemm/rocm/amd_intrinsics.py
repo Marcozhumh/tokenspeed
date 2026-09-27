@@ -46,11 +46,6 @@ from triton.runtime.cache import get_cache_manager
 
 # This port targets gfx950. Match the native device-compilation capability flags.
 HAS_AMD_SCALE_FP4_MFMA = l.constexpr(True)
-HAS_AMD_FP8_MFMA = l.constexpr(True)
-HAS_AMD_BF8_FP8_MFMA = l.constexpr(True)
-HAS_AMD_FP8_BF8_MFMA = l.constexpr(True)
-HAS_AMD_FP8_PACK_CONVERSION = l.constexpr(True)
-HAS_AMD_BF8_PACK_CONVERSION = l.constexpr(True)
 HAS_AMD_SCHED_BARRIER = l.constexpr(True)
 HAS_AMD_SCHED_GROUP_BARRIER = l.constexpr(True)
 kWarpSize = l.constexpr(64)
@@ -136,45 +131,6 @@ def llvm_amdgcn_raw_buffer_store_i32(data, rsrc, voffset, soffset, aux: l.conste
         "llvm.amdgcn.raw.buffer.store.i32",
         "void",
         ("i32", "v4i32", "i32", "i32", "#i32"),
-        (data, rsrc, voffset, soffset, aux),
-        False,
-    )
-
-
-@g.jit
-def llvm_amdgcn_raw_buffer_atomic_add_i32(
-    data, rsrc, voffset, soffset, aux: l.constexpr
-):
-    return _native_call(
-        "llvm.amdgcn.raw.buffer.atomic.add.i32",
-        "i32",
-        ("i32", "v4i32", "i32", "i32", "#i32"),
-        (data, rsrc, voffset, soffset, aux),
-        False,
-    )
-
-
-@g.jit
-def llvm_amdgcn_raw_buffer_atomic_or_i32(
-    data, rsrc, voffset, soffset, aux: l.constexpr
-):
-    return _native_call(
-        "llvm.amdgcn.raw.buffer.atomic.or.i32",
-        "i32",
-        ("i32", "v4i32", "i32", "i32", "#i32"),
-        (data, rsrc, voffset, soffset, aux),
-        False,
-    )
-
-
-@g.jit
-def llvm_amdgcn_raw_buffer_atomic_add_i64(
-    data, rsrc, voffset, soffset, aux: l.constexpr
-):
-    return _native_call(
-        "llvm.amdgcn.raw.buffer.atomic.add.i64",
-        "i64",
-        ("i64", "v4i32", "i32", "i32", "#i32"),
         (data, rsrc, voffset, soffset, aux),
         False,
     )
@@ -342,17 +298,12 @@ class BufferResource(NamedTuple):
         v = llvm_amdgcn_raw_buffer_load_v4i32(
             _resource_content(resource), voffset, soffset, AUX
         )
-        if not v[0].type.is_block():
-            return v
-        else:
-            # Existing callers index the uint4 register array through its last axis.
-            V: l.constexpr = l.BlockedLayout(
-                [1, 4], [64, 1], [l.num_warps(), 1], [1, 0]
-            )
-            return l.convert_layout(
-                l.join(l.join(v[0], v[2]), l.join(v[1], v[3])).reshape([v[0].numel, 4]),
-                V,
-            )
+        # Existing callers index the uint4 register array through its last axis.
+        V: l.constexpr = l.BlockedLayout([1, 4], [64, 1], [l.num_warps(), 1], [1, 0])
+        return l.convert_layout(
+            l.join(l.join(v[0], v[2]), l.join(v[1], v[3])).reshape([v[0].numel, 4]),
+            V,
+        )
 
     @g.jit
     def Store(resource, voffset, soffset, data, AUX: l.constexpr, predicate=True):
@@ -401,27 +352,6 @@ class BufferResource(NamedTuple):
             )
 
     @g.jit
-    def AtomicAddI32(resource, voffset, soffset, data, AUX: l.constexpr):
-        result = llvm_amdgcn_raw_buffer_atomic_add_i32(
-            data, _resource_content(resource), voffset, soffset, AUX
-        )
-        return result.to(l.int32)
-
-    @g.jit
-    def AtomicOrU32(resource, voffset, soffset, data, AUX: l.constexpr):
-        result = llvm_amdgcn_raw_buffer_atomic_or_i32(
-            data, _resource_content(resource), voffset, soffset, AUX
-        )
-        return result
-
-    @g.jit
-    def AtomicAddU64(resource, voffset, soffset, data, AUX: l.constexpr):
-        result = llvm_amdgcn_raw_buffer_atomic_add_i64(
-            data, _resource_content(resource), voffset, soffset, AUX
-        )
-        return result
-
-    @g.jit
     def LoadLds(
         resource,
         lds_ptr,
@@ -459,11 +389,6 @@ class BufferResource(NamedTuple):
                 ),
                 False,
             )
-
-
-@g.jit
-def GetConditionShmPtr(ptr, cond):
-    return l.where(cond, ptr, l.full((), 160 * 1024, l.uint64).to(ptr.dtype))
 
 
 @g.jit
@@ -559,20 +484,18 @@ def amdgcn_ctz64(value):
 
 @g.jit
 def amdgcn_thread_id(reference):
-    if reference.type.is_block():
-        return l.arange(
-            0,
-            l.num_warps() * 64,
-            layout=l.BlockedLayout([1], [64], [l.num_warps()], [0]),
-        ).to(l.uint32)
-    else:
-        return _native_call("llvm.amdgcn.workitem.id.x", "i32", (), (), True)
+    l.static_assert(reference.type.is_block())
+    return l.arange(
+        0,
+        l.num_warps() * 64,
+        layout=l.BlockedLayout([1], [64], [l.num_warps()], [0]),
+    ).to(l.uint32)
 
 
 @g.jit
 def amdgcn_shuffle(value, source_lane, width: l.constexpr = 64):
     # HIP __shfl operates inside the caller's width-sized lane subgroup.
-    lane = amdgcn_thread_id(value) % 64
+    lane = l.arange(0, value.numel, layout=value.type.layout) % 64
     source = (lane // width) * width + source_lane % width
     return amdgcn_ds_bpermute(source * 4, value.to(l.uint32, bitcast=True)).to(
         value.dtype, bitcast=True
@@ -588,11 +511,7 @@ def amdgcn_cvt_pk_bf16_f32(a, b):
 @builtin
 def _uninitialized_like(value, dtype, _semantic):
     dtype = _unwrap_if_constexpr(dtype)
-    ty = (
-        distributed_type(dtype, value.type.shape, value.type.layout)
-        if value.type.is_block()
-        else dtype
-    )
+    ty = distributed_type(dtype, value.type.shape, value.type.layout)
     return l.tensor(_semantic.builder.create_poison(ty.to_ir(_semantic.builder)), ty)
 
 
@@ -686,13 +605,10 @@ def _native_adapter(intrinsic, result, signature, immediates):
     guarded = intrinsic.startswith("when:")
     intrinsic = intrinsic.removeprefix("when:")
     result_ir, _, count, element_ir = _llvm_type(result)
-    if guarded and count:
-        raise ValueError("Conditional adapter requires a void operation")
     params, setup, operands, declared = [], [], [], []
     for index, code in enumerate(signature):
         immediate = code.startswith("#")
-        bits = code.startswith("bits:")
-        code = code.removeprefix("#").removeprefix("bits:")
+        code = code.removeprefix("#")
         ir, _, n, scalar_ir = _llvm_type(code)
         declared.append(ir + (" immarg" if immediate else ""))
         name = f"%a{index}"
@@ -700,12 +616,7 @@ def _native_adapter(intrinsic, result, signature, immediates):
             literal = str(int(immediates[index]))
             operands.append(f"{ir} {literal}")
             continue
-        if bits:
-            width = n * int(re.search(r"\d+$", code)[0])
-            params.append(f"i{width} {name}")
-            setup.append(f"{name}v = bitcast i{width} {name} to {ir}")
-            name += "v"
-        elif n > 1:
+        if n > 1:
             previous = "poison"
             for j in range(n):
                 params.append(f"{scalar_ir} {name}_{j}")
@@ -728,15 +639,7 @@ def _native_adapter(intrinsic, result, signature, immediates):
         predicate = operands.pop().split(" ", 1)[1]
         declared.pop()
         setup.extend([f"br i1 {predicate}, label %active, label %done", "active:"])
-    if intrinsic == "memory.shared.i32":
-        words, alignment = int(immediates[0]), int(immediates[1])
-        declarations.append(
-            f"@petit_shared_{words}_{alignment} = internal addrspace(3) global [{words} x i32] undef, align {alignment}"
-        )
-        setup.append(
-            f"%result = ptrtoint ptr addrspace(3) @petit_shared_{words}_{alignment} to i32"
-        )
-    elif intrinsic.startswith("memory.atomic.add."):
+    if intrinsic.startswith("memory.atomic.add."):
         setup.append(
             f'%result = atomicrmw add {operands[0]}, {operands[1]} syncscope("agent") monotonic'
         )
@@ -772,21 +675,17 @@ def _native_adapter(intrinsic, result, signature, immediates):
         )
     elif intrinsic == "compiler.memory.barrier":
         setup.append('call void asm sideeffect "", "~{memory}"()')
+    elif intrinsic == "compiler.loop.barrier":
+        setup.append('call void asm sideeffect "", "~{memory}"() noduplicate')
     elif intrinsic == "buffer.wbl2.sc0.sc1":
         setup.append('call void asm sideeffect "buffer_wbl2 sc0 sc1", "~{memory}"()')
     elif intrinsic == "s.sleep.1":
         setup.append('call void asm sideeffect "s_sleep 1", "~{memory}"()')
-    elif intrinsic.startswith("asm."):
-        op = intrinsic.removeprefix("asm.")
-        constraints = (
-            "=v,v,v"
-            if op in ("v_pk_add_i16", "v_cvt_pk_bf16_f32")
-            else "=v,v,v,v" if op.endswith(".vector") else "=v,v,v,r"
-        )
-        op = op.removesuffix(".vector")
-        registers = ", ".join(f"${i}" for i in range(len(operands) + 1))
+    elif intrinsic == "asm.v_cvt_pk_bf16_f32":
         setup.append(
-            f'%result = call i32 asm "{op} {registers};", "{constraints}"({", ".join(operands)}) convergent nounwind memory(none)'
+            '%result = call i32 asm "v_cvt_pk_bf16_f32 $0, $1, $2;", "=v,v,v"('
+            + ", ".join(operands)
+            + ") convergent nounwind memory(none)"
         )
     elif intrinsic in ("fmul", "fadd"):
         setup.append(
@@ -798,11 +697,20 @@ def _native_adapter(intrinsic, result, signature, immediates):
             ("%result = " if count else "")
             + f"call {result_ir} @{intrinsic}({', '.join(operands)})"
         )
+    if guarded and count:
+        setup.extend(
+            [
+                "br label %done",
+                "done:",
+                f"%guarded = phi {result_ir} [ %result, %active ], [ zeroinitializer, %entry ]",
+            ]
+        )
+    result_name = "%guarded" if guarded else "%result"
     if count > 1:
-        setup.append(f"%value = extractelement {result_ir} %result, i32 %word")
+        setup.append(f"%value = extractelement {result_ir} {result_name}, i32 %word")
         setup.append(f"ret {element_ir} %value")
     elif count:
-        setup.append(f"ret {result_ir} %result")
+        setup.append(f"ret {result_ir} {result_name}")
     else:
         if guarded:
             setup.extend(["br label %done", "done:"])
@@ -831,6 +739,7 @@ def _native_adapter(intrinsic, result, signature, immediates):
             f"define {element_ir} @{symbol}({', '.join(params)}) alwaysinline"
             + (" convergent" if convergent else "")
             + " {",
+            "entry:",
             *setup,
             "}",
         ]
@@ -852,12 +761,7 @@ def _native_call(intrinsic, result, signature, args, pure, _semantic):
             immediates.append(int(_unwrap_if_constexpr(value)))
             continue
         immediates.append(None)
-        bits = code.startswith("bits:")
-        code = code.removeprefix("bits:")
         _, dtype, n, _ = _llvm_type(code)
-        if bits:
-            dtype = l.uint64 if n * dtype.primitive_bitwidth == 64 else l.uint32
-            n = 1
         for member in value if n > 1 else (value,):
             member = _semantic.to_tensor(_unwrap_if_constexpr(member))
             if member.dtype.is_ptr():
@@ -926,27 +830,6 @@ def _native_store_vector4(ptr, value, _semantic):
     )
 
 
-@builtin
-def _native_load_uint2(ptr, _semantic):
-    """Native aligned uint2 LDS dereference."""
-    return _native_call(
-        "memory.load.v2i32", "v2i32", ("p3",), (ptr,), False, _semantic=_semantic
-    )
-
-
-@builtin
-def _native_store_uint2(ptr, value, _semantic):
-    """Native aligned uint2 LDS assignment."""
-    return _native_call(
-        "memory.store.v2i32",
-        "void",
-        ("p3", "v2i32"),
-        (ptr, value),
-        False,
-        _semantic=_semantic,
-    )
-
-
 @g.jit
 def _native_store_ushort_component(array, index, value, component: l.constexpr):
     """Scalar ushort assignment in an eight-byte-aligned native fragment.
@@ -973,7 +856,10 @@ def _install_native_library_linker():
     cache key includes this source; no installed Triton files are changed.
     """
     previous = triton.knobs.runtime.add_stages_inspection_hook
-    source_hash = sha256(Path(__file__).read_bytes()).hexdigest()
+    root = Path(__file__).resolve().parents[2]
+    source_hash = sha256(
+        b"".join(path.read_bytes() for path in sorted(root.rglob("*.py")))
+    ).hexdigest()
 
     def hook(*args):
         if not args:

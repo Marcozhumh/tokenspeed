@@ -12,6 +12,7 @@ from lib.gemm.rocm.amd_intrinsics import (
 )
 from lib.moe.rocm.mega_moe.workspace import MegaMoEWorkspace
 from lib.tal.device import DeviceTemplate, device_method
+from lib.tal.tensor_ops import first, load_words
 from triton.experimental.gluon import language as l
 
 
@@ -34,7 +35,7 @@ class SchedulerState(NamedTuple):
     expert_metadata_: object
 
 
-class MegaMoEScheduler(DeviceTemplate):
+class MegaMoETwoStageScheduler(DeviceTemplate):
     def __init__(self, Config):
         self._key = Config.cache_key
         self.Workspace = MegaMoEWorkspace(Config)
@@ -43,52 +44,6 @@ class MegaMoEScheduler(DeviceTemplate):
         self.kNumExpertsPerRank = Config.kNumExperts // Config.kNumRanks
         self.kNumExpertsPerLane = (self.kNumExpertsPerRank + 63) // 64
         assert self.kNumExpertsPerLane <= 2
-
-    @device_method
-    def Construct(self, workspace):
-        return SchedulerState(workspace, ())
-
-    @device_method
-    def FetchRecvSumPerExpert(self, state, wtid):
-        tokens_per_expert = ()
-        for i in l.static_range(self.kNumExpertsPerLane):
-            value = (l.full((), 0, l.uint32), l.full((), 0, l.uint32))
-            expert = i * 64 + wtid
-            if expert < self.kNumExpertsPerRank:
-                pending = l.full((), True, l.int1)
-                while pending:
-                    value = BufferResource.LoadU64(
-                        state.workspace_.br_,
-                        expert * 8,
-                        self.Workspace.RecvSumCounterOffset(0),
-                        BufferResource.kSC1Bit,
-                    )
-                    pending = value[1] != self.kNumSMs * self.kNumRanks
-            tokens_per_expert += (value[0],)
-        return SchedulerState(state.workspace_, tokens_per_expert)
-
-    @device_method
-    def GetWork(self, state, wtid, work_id):
-        next = l.full((), 0, l.uint32)
-        for expert in l.static_range(self.kNumExpertsPerRank):
-            tokens = amdgcn_shuffle(state.expert_metadata_[expert // 64], expert % 64)
-            prev = next
-            next += (tokens + self.kSortedTokenBlock - 1) // self.kSortedTokenBlock
-            if prev <= work_id and work_id < next:
-                return (
-                    True,
-                    l.full((), expert, l.uint32),
-                    l.minimum(
-                        self.kSortedTokenBlock,
-                        tokens - (work_id - prev) * self.kSortedTokenBlock,
-                    ),
-                )
-        return False, l.full((), 0, l.uint32), l.full((), 0, l.uint32)
-
-
-class MegaMoETwoStageScheduler(MegaMoEScheduler):
-    def __init__(self, Config):
-        super().__init__(Config)
         self.kLinear1Tiles = Config.kInterDim // Config.kStage1GroupN
         self.kLinear2Tiles = Config.kComputeHiddenSize // Config.kGroupN
         self.kStage1M = Config.kGroupM
@@ -96,22 +51,38 @@ class MegaMoETwoStageScheduler(MegaMoEScheduler):
         self.kExpertLaneMask = (1 << min(64, self.kNumExpertsPerRank)) - 1
 
     @device_method
+    def Construct(self, workspace):
+        return SchedulerState(workspace, ())
+
+    @device_method
     def FetchRecvSumPerExpert(self, state, wtid):
+        wtid = l.arange(
+            0, 64, layout=l.BlockedLayout([1], [64], [l.num_warps()], [0])
+        ).to(l.uint32)
         preceding_blocks = l.full((), 0, l.uint32)
         expert_metadata = ()
         for i in l.static_range(self.kNumExpertsPerLane):
-            value = (l.full((), 0, l.uint32), l.full((), 0, l.uint32))
             expert = i * 64 + wtid
-            if expert < self.kNumExpertsPerRank:
-                pending = l.full((), True, l.int1)
-                while pending:
-                    value = BufferResource.LoadU64(
-                        state.workspace_.br_,
-                        expert * 8,
-                        self.Workspace.RecvSumCounterOffset(0),
-                        BufferResource.kSC1Bit,
-                    )
-                    pending = value[1] != self.kNumSMs * self.kNumRanks
+            active = expert < self.kNumExpertsPerRank
+            pending = active
+            value = (
+                l.full([64], 0, l.uint32, wtid.type.layout),
+                l.full([64], 0, l.uint32, wtid.type.layout),
+            )
+            while first(amdgcn_ballot(pending)) != 0:
+                current = load_words(
+                    state.workspace_.br_,
+                    expert * 8,
+                    self.Workspace.RecvSumCounterOffset(0),
+                    2,
+                    BufferResource.kSC1Bit,
+                    pending,
+                )
+                value = (
+                    l.where(pending, current[0], value[0]),
+                    l.where(pending, current[1], value[1]),
+                )
+                pending = active & (value[1] != self.kNumSMs * self.kNumRanks)
             blocks = (value[0] + self.kSortedTokenBlock - 1) // self.kSortedTokenBlock
             inclusive = amdgcn_wave_inclusive_add(blocks, wtid)
             block_base = preceding_blocks + inclusive - blocks
@@ -126,10 +97,14 @@ class MegaMoETwoStageScheduler(MegaMoEScheduler):
 
     @device_method
     def GetWork(self, state, wtid, logical_id):
+        wtid = l.arange(
+            0, 64, layout=l.BlockedLayout([1], [64], [l.num_warps()], [0])
+        ).to(l.uint32)
         last_metadata = amdgcn_shuffle(
             state.expert_metadata_[(self.kNumExpertsPerRank - 1) // 64],
             (self.kNumExpertsPerRank - 1) % 64,
         )
+        last_metadata = first(last_metadata)
         last_tokens = last_metadata & self.kTokenCountMask
         total_blocks = (last_metadata >> self.kTokenCountBits) + (
             last_tokens + self.kSortedTokenBlock - 1
@@ -162,9 +137,10 @@ class MegaMoETwoStageScheduler(MegaMoEScheduler):
                 )
                 & self.kExpertLaneMask
             )
+            matches = first(matches)
             if matches != 0:
                 expert = amdgcn_ctz64(matches)
-                metadata = amdgcn_shuffle(lane_metadata, expert)
+                metadata = first(amdgcn_shuffle(lane_metadata, expert))
                 tokens = metadata & self.kTokenCountMask
                 block_base = metadata >> self.kTokenCountBits
                 block_in_expert = target_block - block_base
@@ -185,6 +161,9 @@ class MegaMoETwoStageScheduler(MegaMoEScheduler):
     @device_method
     def GetStage1Work(self, state, wtid, logical_id):
         l.static_assert(self.kStage1M == 32 or self.kStage1M == 64)
+        wtid = l.arange(
+            0, 64, layout=l.BlockedLayout([1], [64], [l.num_warps()], [0])
+        ).to(l.uint32)
         target_stage1_block = logical_id // self.kLinear1Tiles
         tile = logical_id % self.kLinear1Tiles
         if self.kStage1M == self.kSortedTokenBlock:
@@ -203,9 +182,10 @@ class MegaMoETwoStageScheduler(MegaMoEScheduler):
                     )
                     & self.kExpertLaneMask
                 )
+                matches = first(matches)
                 if matches != 0:
                     expert = amdgcn_ctz64(matches)
-                    metadata = amdgcn_shuffle(lane_metadata, expert)
+                    metadata = first(amdgcn_shuffle(lane_metadata, expert))
                     tokens = metadata & self.kTokenCountMask
                     block_base = metadata >> self.kTokenCountBits
                     block_in_expert = target_stage1_block - block_base
@@ -231,7 +211,7 @@ class MegaMoETwoStageScheduler(MegaMoEScheduler):
                 lane_metadata = l.where(
                     expert < 64, state.expert_metadata_[0], state.expert_metadata_[1]
                 )
-            metadata = amdgcn_shuffle(lane_metadata, expert % 64)
+            metadata = first(amdgcn_shuffle(lane_metadata, expert % 64))
             tokens = metadata & self.kTokenCountMask
             stage1_blocks = (tokens + self.kStage1M - 1) // self.kStage1M
             physical_blocks = (
@@ -265,6 +245,7 @@ class MegaMoETwoStageScheduler(MegaMoEScheduler):
             state.expert_metadata_[(self.kNumExpertsPerRank - 1) // 64],
             (self.kNumExpertsPerRank - 1) % 64,
         )
+        last_metadata = first(last_metadata)
         last_tokens = last_metadata & self.kTokenCountMask
         total_blocks = (last_metadata >> self.kTokenCountBits) + (
             last_tokens + self.kSortedTokenBlock - 1

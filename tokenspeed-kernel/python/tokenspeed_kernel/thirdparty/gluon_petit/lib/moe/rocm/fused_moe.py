@@ -347,10 +347,7 @@ def HotLoopScheduler(
 
 @g.jit
 def ClearMat(reference, FRAGMENTS: l.constexpr):
-    if reference.type.is_block():
-        zero = l.full(reference.shape, 0, l.float32, reference.type.layout)
-    else:
-        zero = l.full((), 0, l.float32)
+    zero = l.full(reference.shape, 0, l.float32, reference.type.layout)
     return ((zero, zero, zero, zero),) * FRAGMENTS
 
 

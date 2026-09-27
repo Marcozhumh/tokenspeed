@@ -3,6 +3,7 @@
 from typing import NamedTuple
 
 import triton.experimental.gluon as g
+import triton.language as tl
 from lib.gemm.rocm.amd_intrinsics import (
     BufferResource,
     _native_call,
@@ -12,10 +13,10 @@ from lib.gemm.rocm.amd_intrinsics import (
 from lib.moe.rocm.comm.barrier import (
     compiler_memory_barrier,
     complete_scoped_vmem,
-    grid_sync,
-    store_xgpu_epoch_release,
     system_fence_acquire,
-    wait_xgpu_epoch_relaxed,
+    system_fence_release,
+    tensor_grid_sync,
+    wait_tensor_signal,
     wave_barrier,
 )
 from lib.moe.rocm.fused_moe import ClearMat
@@ -30,7 +31,14 @@ from lib.moe.rocm.ops.mega_moe.token_shuffle_direct_push import DirectPushTokenS
 from lib.moe.rocm.ops.mxfp4_activation import MxFp4ActivationQuantizer, MxFp4Stage2Input
 from lib.moe.rocm.profiler import Profiler, RecordProfile
 from lib.tal.device import DeviceTemplate, device_method
-from lib.tal.thread_jit import thread_jit
+from lib.tal.tensor_ops import (
+    atomic_add,
+    atomic_or,
+    is_first_thread,
+    prevent_loop_unroll,
+    store_words,
+    wave_id,
+)
 from triton.experimental.gluon import language as l
 
 kMegaMoEProfileCtas = 3072
@@ -66,7 +74,6 @@ class MegaMoETwoStageCommComputeKernel(DeviceTemplate):
             Config
         ), MegaMoETwoStageScheduler(Config)
         self.TokenDispatch = DirectPushTokenShuffle(Config, kExternalInputs, kProfile)
-        self.XGpuSync = Config.XGpuSync
         for field in (
             "kNumWarps",
             "kThreads",
@@ -105,48 +112,53 @@ class MegaMoETwoStageCommComputeKernel(DeviceTemplate):
 
     @device_method
     def NextDynamicWork(self, workspace, shm, sm_id, tid, logical_id, set=0):
+        # Recompute the ticket offset here so it does not occupy an SGPR
+        # throughout the matrix loop. The tied operand emits no instruction.
+        sm_id = l.inline_asm_elementwise(
+            "", "=s,0", [sm_id], l.uint32, is_pure=False, pack=1
+        )
         shard = sm_id & (self.kWorkShards - 1)
-        if tid == 0:
-            local_work = BufferResource.AtomicAddI32(
-                workspace.br_,
-                self.Workspace.DirectPushWorkHeadOffset(shard, set),
-                0,
-                1,
-                BufferResource.kAtomicScopeAgent,
-            ).to(l.uint32)
-            l.store(self.WorkId(shm), shard + local_work * self.kWorkShards)
+        leader = is_first_thread(tid)
+        local_work = atomic_add(
+            workspace.br_,
+            self.Workspace.DirectPushWorkHeadOffset(shard, set),
+            0,
+            1,
+            BufferResource.kAtomicScopeAgent,
+            leader,
+        ).to(l.uint32)
+        l.store(
+            self.WorkId(shm) + l.full(tid.shape, 0, l.uint32, tid.type.layout),
+            shard + local_work * self.kWorkShards,
+            mask=leader,
+        )
         l.barrier()
         return l.load(self.WorkId(shm))
 
     @device_method
     def WaitForPayloadBlocks(self, workspace, work, tid, payload_wait_cycles):
         start = self.Profiler.Start()
-        if tid == 0:
-            subblocks = (
-                work.work_m + self.kSortedTokenBlock - 1
-            ) // self.kSortedTokenBlock
-            for subblock in range(subblocks):
-                rows = l.minimum(
-                    self.kSortedTokenBlock,
-                    work.work_m - subblock * self.kSortedTokenBlock,
+        subblocks = (work.work_m + self.kSortedTokenBlock - 1) // self.kSortedTokenBlock
+        for subblock in range(subblocks):
+            rows = l.minimum(
+                self.kSortedTokenBlock,
+                work.work_m - subblock * self.kSortedTokenBlock,
+            )
+            ready_mask = l.where(rows == 32, 0xFFFFFFFF, (1 << rows) - 1).to(l.uint32)
+            observed = l.full((), 0, l.uint32)
+            pending = l.full((), True, l.int1)
+            while pending:
+                observed = BufferResource.LoadU32(
+                    workspace.br_,
+                    self.Workspace.L1PayloadArrivalMaskOffset(
+                        workspace.rank_id_, work.pool_block + subblock
+                    ),
+                    0,
+                    BufferResource.kSC0Bit | BufferResource.kSC1Bit,
                 )
-                ready_mask = l.where(rows == 32, 0xFFFFFFFF, (1 << rows) - 1).to(
-                    l.uint32
-                )
-                observed = l.full((), 0, l.uint32)
-                pending = l.full((), True, l.int1)
-                while pending:
-                    observed = BufferResource.LoadU32(
-                        workspace.br_,
-                        self.Workspace.L1PayloadArrivalMaskOffset(
-                            workspace.rank_id_, work.pool_block + subblock
-                        ),
-                        0,
-                        BufferResource.kSC0Bit | BufferResource.kSC1Bit,
-                    )
-                    pending = (observed & ready_mask) != ready_mask
-                    if pending:
-                        _native_call("s.sleep.1", "void", (), (), False)
+                pending = (observed & ready_mask) != ready_mask
+                if pending:
+                    _native_call("s.sleep.1", "void", (), (), False)
         l.barrier()
         compiler_memory_barrier()
         l.barrier()
@@ -204,40 +216,44 @@ class MegaMoETwoStageCommComputeKernel(DeviceTemplate):
         self.ActivationQuantizer.StoreAccumulator(quant_shm, hidden, wid, wtid)
         l.barrier()
         route_in_slice, col_lane = tid // 32, tid % 32
-        for route_slice in l.static_range(self.Config.kGroupM // 8):
+        # Skip slices containing no routed rows, as the original per-thread
+        # predicate did. Keep the existing lane ownership and store masks.
+        for route_slice in tl.range((work.work_m + 7) // 8, loop_unroll_factor=1):
+            prevent_loop_unroll()
             route = route_slice * 8 + route_in_slice
-            if route < work.work_m:
-                for col_segment in l.static_range(self.Config.kStage1GroupN // 128):
-                    quant_col = col_segment * 32 + col_lane
-                    quantized = self.ActivationQuantizer.Quantize(
-                        quant_shm, route, quant_col
-                    )
-                    self.ActivationQuantizer.Store(
-                        workspace.br_,
-                        self.Workspace.L2TokenBufferOffset(0),
-                        self.Workspace.L2ScaleBufferOffset(),
-                        pool_base + route,
-                        pool_base + route,
-                        work.tile,
-                        quant_col,
-                        self.kInterDim,
-                        self.Workspace.kL2ScaleCols,
-                        quantized,
-                        BufferResource.kSC1Bit,
-                    )
+            for col_segment in l.static_range(self.Config.kStage1GroupN // 128):
+                quant_col = col_segment * 32 + col_lane
+                quantized = self.ActivationQuantizer.Quantize(
+                    quant_shm, l.minimum(route, self.Config.kGroupM - 1), quant_col
+                )
+                self.ActivationQuantizer.Store(
+                    workspace.br_,
+                    self.Workspace.L2TokenBufferOffset(0),
+                    self.Workspace.L2ScaleBufferOffset(),
+                    pool_base + route,
+                    pool_base + route,
+                    work.tile,
+                    quant_col,
+                    self.kInterDim,
+                    self.Workspace.kL2ScaleCols,
+                    quantized,
+                    BufferResource.kSC1Bit,
+                    route < work.work_m,
+                )
         complete_scoped_vmem()
         quantize_store = cycles.quantize_store + self.Profiler.End(start)
         start = self.Profiler.Start()
         l.barrier()
-        if tid == 0:
-            for subblock in range((work.work_m + 31) // 32):
-                BufferResource.AtomicOrU32(
-                    workspace.br_,
-                    self.Workspace.L2ArrivalMaskOffset(work.pool_block + subblock),
-                    0,
-                    1 << work.tile,
-                    BufferResource.kAtomicScopeAgent,
-                )
+        for subblock in tl.range((work.work_m + 31) // 32, loop_unroll_factor=1):
+            prevent_loop_unroll()
+            atomic_or(
+                workspace.br_,
+                self.Workspace.L2ArrivalMaskOffset(work.pool_block + subblock),
+                0,
+                1 << work.tile,
+                BufferResource.kAtomicScopeAgent,
+                is_first_thread(tid),
+            )
         l.barrier()
         publish = cycles.publish + self.Profiler.End(start)
         return Stage1Cycles(payload_wait, prepare, matmul, quantize_store, publish)
@@ -245,19 +261,18 @@ class MegaMoETwoStageCommComputeKernel(DeviceTemplate):
     @device_method
     def WaitL2Block(self, workspace, pool_block, tid):
         kReadyMask: l.constexpr = (1 << self.kStage1TileCount) - 1
-        if tid == 0:
-            observed = l.full((), 0, l.uint32)
-            pending = l.full((), True, l.int1)
-            while pending:
-                observed = BufferResource.LoadU32(
-                    workspace.br_,
-                    self.Workspace.L2ArrivalMaskOffset(pool_block),
-                    0,
-                    BufferResource.kSC0Bit | BufferResource.kSC1Bit,
-                )
-                pending = (observed & kReadyMask) != kReadyMask
-                if pending:
-                    _native_call("s.sleep.1", "void", (), (), False)
+        observed = l.full((), 0, l.uint32)
+        pending = l.full((), True, l.int1)
+        while pending:
+            observed = BufferResource.LoadU32(
+                workspace.br_,
+                self.Workspace.L2ArrivalMaskOffset(pool_block),
+                0,
+                BufferResource.kSC0Bit | BufferResource.kSC1Bit,
+            )
+            pending = (observed & kReadyMask) != kReadyMask
+            if pending:
+                _native_call("s.sleep.1", "void", (), (), False)
         l.barrier()
 
     @device_method
@@ -473,7 +488,7 @@ class MegaMoETwoStageCommComputeKernel(DeviceTemplate):
         sm_id,
         tid,
     ):
-        wid, wtid = amdgcn_readfirstlane(tid // 64), tid % 64
+        wid, wtid = tid // 64, tid % 64
         workspace = self.Workspace.Initialize(base, rank)
         total_start = self.Profiler.Start()
         phase_start = self.Profiler.Start()
@@ -535,7 +550,7 @@ class MegaMoETwoStageCommComputeKernel(DeviceTemplate):
         sm_id,
         tid,
     ):
-        wid, wtid = amdgcn_readfirstlane(tid // 64), tid % 64
+        wid, wtid = tid // 64, tid % 64
         workspace = self.Workspace.Initialize(base, rank)
         total_start = self.Profiler.Start()
         scheduler = self.Scheduler.Construct(workspace)
@@ -583,12 +598,10 @@ class MegaMoECombineKernel(DeviceTemplate):
             profile, 13, self.Profiler.End(phase_start), tid, sm_id, self.kProfile, 3072
         )
         phase_start = self.Profiler.Start()
-        grid_sync(
+        tensor_grid_sync(
             self.Workspace,
             workspace,
             sm_id,
-            tid,
-            l.barrier,
             self.kNumSMs,
             self.kOutputHandoffGridSyncIndex,
             False,
@@ -598,24 +611,32 @@ class MegaMoECombineKernel(DeviceTemplate):
             profile, 14, self.Profiler.End(phase_start), tid, sm_id, self.kProfile, 3072
         )
         phase_start = self.Profiler.Start()
-        if tid < 64:
+        if wave_id() == 0:
             if sm_id == 0:
                 system_fence_acquire()
-                if tid < self.Config.kNumRanks:
-                    store_xgpu_epoch_release(
-                        workspace,
-                        self.Workspace.XGpuEpochSignalOffset(tid, workspace.rank_id_),
-                        dispatch_epoch,
-                    )
+                system_fence_release()
+                store_words(
+                    workspace.br_,
+                    self.Workspace.XGpuEpochSignalOffset(tid, workspace.rank_id_),
+                    0,
+                    dispatch_epoch,
+                    1,
+                    BufferResource.kSC0Bit | BufferResource.kSC1Bit,
+                    tid < self.Config.kNumRanks,
+                )
             wave_barrier()
             if sm_id == 0:
                 amdgcn_s_waitcnt(0, -1, 0)
-            if tid < self.Config.kNumRanks:
-                wait_xgpu_epoch_relaxed(
-                    workspace,
-                    self.Workspace.XGpuEpochSignalOffset(workspace.rank_id_, tid),
-                    dispatch_epoch,
-                )
+            peer = l.arange(
+                0, 64, layout=l.BlockedLayout([1], [64], [l.num_warps()], [0])
+            ).to(l.uint32)
+            wait_tensor_signal(
+                workspace,
+                self.Workspace.XGpuEpochSignalOffset(workspace.rank_id_, peer),
+                dispatch_epoch,
+                peer < self.Config.kNumRanks,
+                True,
+            )
             wave_barrier()
         l.barrier()
         RecordProfile(
@@ -633,8 +654,8 @@ class MegaMoECombineKernel(DeviceTemplate):
         )
 
 
-@thread_jit
-def _stage1_thread(
+@g.jit
+def _stage1(
     Kernel: l.constexpr,
     w13,
     scales_w13,
@@ -667,8 +688,8 @@ def _stage1_thread(
     )
 
 
-@thread_jit
-def _stage2_thread(
+@g.jit
+def _stage2(
     Kernel: l.constexpr, w2, scales_w2, w2_bias, base, rank, profile, shm, sm_id, tid
 ):
     Kernel.RunStage2Kernel(
@@ -676,8 +697,8 @@ def _stage2_thread(
     )
 
 
-@thread_jit
-def _combine_thread(
+@g.jit
+def _combine(
     Kernel: l.constexpr,
     out,
     num_tokens,
@@ -714,7 +735,7 @@ def MegaMoEStage1(
         l.SwizzledSharedLayout(1, 1, 1, [0]),
     )
     shm = l.full((), 0, l.uint64).to(l.pointer_type(l.uint32, 3))
-    _stage1_thread(
+    _stage1(
         Kernel,
         w13,
         scales_w13,
@@ -746,7 +767,7 @@ def MegaMoEStage2(
         l.SwizzledSharedLayout(1, 1, 1, [0]),
     )
     shm = l.full((), 0, l.uint64).to(l.pointer_type(l.uint32, 3))
-    _stage2_thread(
+    _stage2(
         Kernel,
         w2,
         scales_w2,
@@ -768,7 +789,7 @@ def MegaMoECombine(
     tid = l.arange(
         0, Kernel.kThreads, layout=l.BlockedLayout([1], [64], [Kernel.kNumWarps], [0])
     ).to(l.uint32)
-    _combine_thread(
+    _combine(
         Kernel,
         out,
         num_tokens,

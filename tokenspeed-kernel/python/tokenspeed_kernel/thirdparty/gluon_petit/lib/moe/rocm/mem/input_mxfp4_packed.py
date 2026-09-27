@@ -140,7 +140,12 @@ class MxFp4InputPacked(DeviceTemplate):
     @device_method
     def PrepareScales(self, state, shm, wid, wtid, kStages: l.constexpr):
         l.static_assert(kStages == self.kScaleStages)
-        self.LoadScalesAsync(state, shm, wid, wtid)
+        # Keep scale-load addresses local to preparation instead of retaining
+        # them across the matrix loop. This tied operand emits no instruction.
+        scale_tid = l.inline_asm_elementwise(
+            "", "=v,0", [wid * 64 + wtid], l.uint32, is_pure=False, pack=1
+        )
+        self.LoadScalesAsync(state, shm, scale_tid // 64, scale_tid % 64)
         amdgcn_s_waitcnt_barrier(0)
         self.RepackScales(shm, wid * 64 + wtid)
 
@@ -201,22 +206,33 @@ class MxFp4InputPacked(DeviceTemplate):
         )
         for load in l.static_range(kLoadIterations):
             local_vector = wave_in_stage * 64 + wtid + load * kVectorsPerIteration
-            stage_word = l.where(
-                local_vector < self.kScaleVectorsPerStage, local_vector * 4, 0
-            )
+            stage_word = local_vector * 4
             lds = shm + stage * self.kShmStageWords + self.kShmActWords + stage_word
             vector = stage * self.kScaleVectorsPerStage + local_vector
             row = vector // self.kScaleVectorsPerRow
             row_vector = vector - row * self.kScaleVectorsPerRow
-            src = l.where(
-                local_vector < self.kScaleVectorsPerStage,
+            src = (
                 state.activation_offset_
                 + self.kValueBytes
                 + row * self.kRowStride
-                + row_vector * 16,
-                0xFFFFFFFF,
+                + row_vector * 16
             )
-            BufferResource.LoadLds(scales, lds, src, 0, self.kPayloadLoadAux, 16, 0)
+            if (load + 1) * kVectorsPerIteration <= self.kScaleVectorsPerStage:
+                active = True
+            else:
+                active = local_vector < self.kScaleVectorsPerStage
+            # An out-of-range buffer load still writes zeros to LDS. Inactive
+            # lanes must not issue an LDS write beyond this stage's scales.
+            BufferResource.LoadLds(
+                scales,
+                lds,
+                src,
+                0,
+                self.kPayloadLoadAux,
+                16,
+                0,
+                predicate=active,
+            )
 
     @device_method
     def RepackScales(self, shm, tid):

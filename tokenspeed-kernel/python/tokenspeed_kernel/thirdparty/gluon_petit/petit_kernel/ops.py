@@ -1,4 +1,4 @@
-"""MegaMoE bindings."""
+"""Tensor MegaMoE bindings."""
 
 from lib.pybind.mega_moe import MegaMoe as mega_moe
 from lib.pybind.mega_moe import MegaMoeQuantizeMxFp4 as mega_moe_quantize_mxfp4

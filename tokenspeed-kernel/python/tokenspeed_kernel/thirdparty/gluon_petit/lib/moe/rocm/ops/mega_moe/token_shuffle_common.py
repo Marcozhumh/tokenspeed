@@ -22,8 +22,7 @@ class TokenShuffleCommon(DeviceTemplate):
         ) // self.kThreads
         for i in l.static_range(kIterations):
             expert = tid + i * self.kThreads
-            if expert < self.kNumExperts:
-                l.store(expert_count + expert, 0)
+            l.store(expert_count + expert, 0, mask=expert < self.kNumExperts)
         l.barrier()
 
     @device_method

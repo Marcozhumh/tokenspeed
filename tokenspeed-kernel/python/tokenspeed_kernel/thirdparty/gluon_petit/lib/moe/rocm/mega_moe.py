@@ -5,7 +5,6 @@ from functools import cache
 
 import triton.experimental.gluon as g
 from lib.moe.rocm.fused_moe import (
-    FusedMoESolutionId,
     IsGfx950,
     MegaMoEProducerGeometry,
     MegaMoETileShape,
@@ -29,9 +28,7 @@ from lib.moe.rocm.mega_moe_config_selector import (
     kMegaMoETwoStageMxFp4SiluSolutionId,
     kMegaMoETwoStageMxFp4SolutionId,
 )
-from lib.moe.rocm.memory_ops import _load_vector4, _store_vector4
 from lib.moe.rocm.quantization import MxFp4Scale, NativeMxFp4Quantization
-from lib.tal.thread_jit import thread_jit
 from triton.experimental.gluon import language as l
 
 kMegaMoEProfileCtas, kMegaMoEProfileCounterCount = 3072, 35
@@ -251,69 +248,76 @@ def GetMegaMoEWorkspaceInfo(rank, solution_id):
     return adapter.GetWorkspaceInfo(rank)
 
 
-@thread_jit
-def _quantize_thread(input, output, groups_per_row, input_row_stride, group_col, row):
-    groups_per_row = (l.full((), 0, l.uint32) + groups_per_row).to(l.uint32)
-    input_row_stride = (l.full((), 0, l.uint32) + input_row_stride).to(l.uint32)
-    scale_row_stride = (groups_per_row + 15) & 0xFFFFFFF0
-    value_row_bytes = groups_per_row * 16
-    output_row_stride = value_row_bytes + scale_row_stride
-    if group_col < scale_row_stride:
-        row_output = output + row * output_row_stride
-        row_values = row_output.to(l.pointer_type(l.uint32))
-        row_scales = row_output + value_row_bytes
-        if group_col >= groups_per_row:
-            l.store(row_scales + group_col, 0)
-        else:
-            row_input = input + row * input_row_stride
-            src = row_input.to(l.pointer_type(l.uint32)) + group_col * 16
-            values = ()
-            for chunk in l.static_range(4):
-                packed = _load_vector4(src + chunk * 4)
-                pairs = ()
-                for i in l.static_range(4):
-                    pairs += (
-                        (
-                            (packed[i] << 16).to(l.float32, bitcast=True),
-                            (packed[i] & 0xFFFF0000).to(l.float32, bitcast=True),
-                        ),
-                    )
-                values += (
-                    (pairs[0][0], pairs[0][1], pairs[1][0], pairs[1][1]),
-                    (pairs[2][0], pairs[2][1], pairs[3][0], pairs[3][1]),
-                )
-            max_abs = l.full((), 0.0, l.float32)
-            for vector in l.static_range(8):
-                max_abs = l.maximum(
-                    max_abs, NativeMxFp4Quantization.MaximumAbs(values[vector])
-                )
-            if max_abs == 0.0:
-                _store_vector4(row_values + group_col * 4, (0, 0, 0, 0))
-                l.store(row_scales + group_col, 0)
-            else:
-                required = max_abs * (1.0 / 6.0)
-                required_bits = required.to(l.uint32, bitcast=True)
-                scale_byte = (required_bits >> 23) & 0xFF
-                if scale_byte < 0xFF and (required_bits & 0x7FFFFF) != 0:
-                    scale_byte += 1
-                scale_bits = scale_byte << 23
-                scale = MxFp4Scale(scale_byte, scale_bits.to(l.float32, bitcast=True))
-                packed = NativeMxFp4Quantization.Pack(values, scale, 8)
-                _store_vector4(row_values + group_col * 4, packed)
-                l.store(row_scales + group_col, scale_byte)
-
-
 @g.jit
 def MegaMoEQuantizeMxFp4Kernel(input, output, groups_per_row, input_row_stride):
-    tid = l.arange(0, 64, layout=l.BlockedLayout([1], [64], [1], [0])).to(l.uint32)
-    group_col = l.program_id(0).to(l.uint32) * 64 + tid
-    _quantize_thread(
-        input,
-        output,
-        groups_per_row,
-        input_row_stride,
-        group_col,
-        l.program_id(1).to(l.uint32),
+    groups_per_row = (l.full((), 0, l.uint32) + groups_per_row).to(l.uint32)
+    input_row_stride = (l.full((), 0, l.uint32) + input_row_stride).to(l.uint32)
+    # Each lane owns one 32-element quantization group, as in the original
+    # thread implementation. The trailing dimension stays in lane registers.
+    layout: l.constexpr = l.BlockedLayout([1, 4], [64, 1], [1, 1], [1, 0])
+    lane = l.arange(0, 64, layout=l.SliceLayout(1, layout))
+    word = l.arange(0, 4, layout=l.SliceLayout(0, layout))
+    group_col = l.program_id(0) * 64 + lane
+    row = l.program_id(1)
+    scale_row_stride = (groups_per_row + 15) & 0xFFFFFFF0
+    value_row_bytes = groups_per_row * 16
+    row_output = output + row * (value_row_bytes + scale_row_stride)
+    row_input = (input + row * input_row_stride).to(l.pointer_type(l.uint32))
+    valid = group_col < groups_per_row
+    values = ()
+    for chunk in l.static_range(4):
+        packed = l.load(
+            row_input + group_col[:, None] * 16 + chunk * 4 + word[None, :],
+            mask=valid[:, None],
+            other=0,
+        )
+        even, odd = l.split(packed.reshape([64, 2, 2]))
+        x, z = l.split(even)
+        y, w = l.split(odd)
+        words = (
+            l.convert_layout(x, l.SliceLayout(1, layout)),
+            l.convert_layout(y, l.SliceLayout(1, layout)),
+            l.convert_layout(z, l.SliceLayout(1, layout)),
+            l.convert_layout(w, l.SliceLayout(1, layout)),
+        )
+        pairs = ()
+        for i in l.static_range(4):
+            pairs += (
+                (
+                    (words[i] << 16).to(l.float32, bitcast=True),
+                    (words[i] & 0xFFFF0000).to(l.float32, bitcast=True),
+                ),
+            )
+        values += (
+            (pairs[0][0], pairs[0][1], pairs[1][0], pairs[1][1]),
+            (pairs[2][0], pairs[2][1], pairs[3][0], pairs[3][1]),
+        )
+    max_abs = l.full([64], 0.0, l.float32, l.SliceLayout(1, layout))
+    for vector in l.static_range(8):
+        max_abs = l.maximum(max_abs, NativeMxFp4Quantization.MaximumAbs(values[vector]))
+    required_bits = (max_abs * (1.0 / 6.0)).to(l.uint32, bitcast=True)
+    scale_byte = (required_bits >> 23) & 0xFF
+    scale_byte += ((scale_byte < 0xFF) & ((required_bits & 0x7FFFFF) != 0)).to(l.uint32)
+    scale_byte = l.where(max_abs == 0, 0, scale_byte)
+    # A unit scale avoids division by zero for empty groups; their packed
+    # representation and scale byte are explicitly zeroed below.
+    scale_bits = l.where(max_abs == 0, 127, scale_byte) << 23
+    scale = MxFp4Scale(scale_byte, scale_bits.to(l.float32, bitcast=True))
+    packed = NativeMxFp4Quantization.Pack(values, scale, 8)
+    result = l.join(l.join(packed[0], packed[2]), l.join(packed[1], packed[3]))
+    result = l.convert_layout(result.reshape([64, 4]), layout)
+    result = l.where((max_abs != 0)[:, None], result, 0)
+    l.store(
+        row_output.to(l.pointer_type(l.uint32))
+        + group_col[:, None] * 4
+        + word[None, :],
+        result,
+        mask=valid[:, None],
+    )
+    l.store(
+        row_output + value_row_bytes + group_col,
+        scale_byte,
+        mask=group_col < scale_row_stride,
     )
 
 

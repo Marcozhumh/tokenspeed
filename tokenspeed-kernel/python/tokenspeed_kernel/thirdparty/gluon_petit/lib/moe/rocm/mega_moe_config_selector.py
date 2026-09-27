@@ -6,9 +6,7 @@ from lib.moe.rocm.fused_moe import (
     FusedMoEMfmaShape,
     FusedMoESolutionId,
     FusedMoEStage1Buffering,
-    FusedMoEStage1TileShape,
     FusedMoEStages,
-    FusedMoEWeightLoadPolicy,
     FusedMoEWeightOrdering,
 )
 
@@ -147,10 +145,6 @@ class MegaMoEConfigSelector(DeviceTemplate):
             if Solution.stage1_buffering == FusedMoEStage1Buffering.kDoubleBuffer
             else OnestageFusedMoEStage1SingleBufferOp
         )(self.Stage1Tiles)
-        from lib.moe.rocm.comm.barrier import LegacyXGpuSync
-        from lib.moe.rocm.mega_moe.workspace import MegaMoEWorkspace
-
-        self.XGpuSync = LegacyXGpuSync(self, MegaMoEWorkspace(self))
 
 
 class MegaMoEStage1M64W4Config(DeviceTemplate):

@@ -39,5 +39,10 @@ def RecordProfile(
     profile, counter, value, tid, block, kProfile: l.constexpr, kStride: l.constexpr
 ):
     if kProfile:
-        if tid == 0 and profile.to(l.uint64) != 0:
-            l.store(profile + counter * kStride + block, value)
+        if profile.to(l.uint64) != 0:
+            offset = (
+                counter * kStride
+                + block
+                + l.full(tid.shape, 0, l.uint32, tid.type.layout)
+            )
+            l.store(profile + offset, value, mask=tid == 0)

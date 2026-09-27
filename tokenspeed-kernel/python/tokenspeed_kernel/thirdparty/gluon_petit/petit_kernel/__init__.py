@@ -1,4 +1,4 @@
-"""Gluon MegaMoE API."""
+"""Tensor Gluon MegaMoE API."""
 
 import enum
 from dataclasses import dataclass, field

@@ -26,13 +26,11 @@ when selecting a kernel plan.
 
 ## Integration status
 
-The source is intentionally kept at the upstream Gluon kernel contract. The
-currently pinned `tokenspeed-triton` compiler rejects two constructs used by
+The runtime retains the upstream LDS memory contract. The currently pinned `tokenspeed-triton` compiler rejects two constructs used by
 that contract: numeric LDS pointer address space `3` and the 8196-word shared
 allocation used by MegaMoE. This port therefore uses stock Triton 3.8.0 until
 the separately reviewed compiler compatibility fix is available in
-`tokenspeed-triton`; the Petit kernel source is not adapted around either
-compiler limitation.
+`tokenspeed-triton`; the tensor conversion does not change either memory requirement.
 
 ## Runtime contract
 
@@ -49,3 +47,52 @@ runtime warns when it ignores such a clamp.
 The vendored runtime exposes MegaMoE only. Unused non-MegaMoE launchers and
 their FP8 paths are removed; `Moe2StageConfig` and `fmoe_matmul_2stage_*` are
 no longer exported. The registered Gluon Petit backend is unchanged.
+
+## Tensor execution
+
+Dispatch, scheduling, both matrix stages, and combine use distributed Gluon
+values with explicit masks for memory side effects. Wave-local polling does
+not require other waves to participate in a reduction. The thread compiler
+and its scalar stage ABI are removed. The native scaled MFMA instructions and
+K accumulation order are preserved in this conversion.
+
+Partial scale loads suppress inactive lanes at the instruction: an out-of-range
+buffer address alone still writes zeros to LDS and can overwrite valid scales.
+The barrier utilities document publication scope and payload acquire semantics.
+
+## Validation
+
+Run the GFX950 helper tests and the EP8 sparse-weight numerical reference:
+
+```bash
+pytest tokenspeed-kernel/test/amd/ops/moe/test_gluon_petit_tensor.py
+torchrun --standalone --nproc-per-node=8 -m pytest --import-mode=importlib \
+  tokenspeed-kernel/test/amd/ops/moe/test_gluon_petit_distributed.py
+```
+
+The distributed test covers balanced and uneven input counts, empty ranks,
+partial scale tiles, capacity, skewed destinations, and refreshed CUDA graphs.
+Set `PETIT_OUTPUT_DIR` to save outputs for exact cross-version comparisons.
+`check_gluon_petit_ep8.py` in the same directory additionally compares dense
+nonzero weights and records compiled kernel resources; its `--action write`
+and `--action check` runs must use the same arguments and reference directory.
+Select each checkout through `PYTHONPATH=<checkout>/tokenspeed-kernel/python`.
+For cross-checkout pytest comparisons, also set
+`PETIT_EXPECTED_RUNTIME_ROOT=<checkout>` and use
+`--confcutdir=tokenspeed-kernel/test/amd/ops/moe` to prevent the repository's
+parent `conftest.py` from overriding that import path. Include the test directory
+in `PYTHONPATH` for its shared utilities.
+
+Use the full-path benchmark for both `gpt_oss_120b` and `dsv4`:
+
+```bash
+torchrun --standalone --nproc-per-node=8 \
+  tokenspeed-kernel/test/ops/moe/bench_gluon_petit_megamoe.py \
+  --profile gpt_oss_120b --tokens 8 16 32 64 128 256 512 1024 \
+  --mode graph --warmup 20 --repeat 100 --graph-iters 16 --seed 42
+```
+
+Compare repeated paired runs with the same environment and report `total_ms`.
+When evaluating the tensor conversion, keep the original baseline results and
+also compare against a baseline with only the partial scale-load predicate fix;
+that separates the correctness repair from execution-path differences.
