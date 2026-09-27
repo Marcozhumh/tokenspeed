@@ -289,7 +289,7 @@ def _slice_inputs(inputs: Any, num_tokens: int) -> Any:
     )
 
 
-def petit_gluon_mxfp4_megamoe_weights(plan: dict, w: torch.nn.Module) -> None:
+def gluon_petit_mxfp4_megamoe_weights(plan: dict, w: torch.nn.Module) -> None:
     """Repack loaded serialized MXFP4 expert weights for Gluon Petit.
 
     Args:
@@ -375,9 +375,9 @@ def petit_gluon_mxfp4_megamoe_weights(plan: dict, w: torch.nn.Module) -> None:
 @register_kernel(
     "moe",
     "apply",
-    name="petit_gluon_mxfp4_megamoe_apply",
-    solution="petit_gluon",
-    weight_preprocessor=petit_gluon_mxfp4_megamoe_weights,
+    name="gluon_petit_mxfp4_megamoe_apply",
+    solution="gluon",
+    weight_preprocessor=gluon_petit_mxfp4_megamoe_weights,
     capability=CapabilityRequirement(
         vendors=frozenset({"amd"}),
         min_arch_version=ArchVersion(9, 5),
@@ -398,7 +398,7 @@ def petit_gluon_mxfp4_megamoe_weights(plan: dict, w: torch.nn.Module) -> None:
     },
     priority=Priority.SPECIALIZED + 3,
 )
-def petit_gluon_mxfp4_megamoe_apply(
+def gluon_petit_mxfp4_megamoe_apply(
     plan: dict,
     x: torch.Tensor,
     w: torch.nn.Module,

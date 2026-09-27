@@ -331,7 +331,7 @@ def test_petit_layer_constraints(
         mock.patch.object(
             expert_module.tokenspeed_kernel,
             "moe_plan",
-            return_value={"solution": "petit_gluon"},
+            return_value={"solution": "gluon"},
         ) as plan,
         mock.patch.object(expert_module, "create_layer_weights") as weights,
     ):
@@ -343,4 +343,6 @@ def test_petit_layer_constraints(
         else:
             plan.assert_called_once()
             assert plan.call_args.kwargs["ep_size"] == 8
+            assert plan.call_args.kwargs["solution"] == "gluon"
+            assert plan.call_args.kwargs["a2a_backend"] == "petit_gluon"
             weights.assert_called_once()

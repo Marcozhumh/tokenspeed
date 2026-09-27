@@ -19,7 +19,10 @@ The HIP VMM binding is compiled on first use through
 `torch.utils.cpp_extension`, so a ROCm development environment is required.
 
 The TokenSpeed adapter lives in `tokenspeed_kernel.ops.moe.gluon.petit` and
-registers this runtime as the explicit `petit_gluon` MoE solution.
+registers this runtime as the `gluon` solution with `gluon_petit_*` function
+and kernel registration names. The serving options remain `--moe-backend petit_gluon`
+and `--all2all-backend petit_gluon`; the runtime maps the MoE backend to `gluon`
+when selecting a kernel plan.
 
 ## Integration status
 

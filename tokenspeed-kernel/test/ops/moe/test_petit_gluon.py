@@ -23,14 +23,44 @@ from unittest import mock
 
 import pytest
 import torch
+from tokenspeed_kernel.ops.moe import moe_plan
 from tokenspeed_kernel.ops.moe.gluon.petit import (
     _DSV4_PROFILE,
     _GPT_OSS_120B_PROFILE,
     _Profile,
     _validate_layer,
-    petit_gluon_mxfp4_megamoe_apply,
-    petit_gluon_mxfp4_megamoe_weights,
+    gluon_petit_mxfp4_megamoe_apply,
+    gluon_petit_mxfp4_megamoe_weights,
 )
+
+
+@pytest.mark.parametrize("profile", [_GPT_OSS_120B_PROFILE, _DSV4_PROFILE])
+def test_petit_plan_selects_gluon_registration(profile, mi350_platform) -> None:
+    with mock.patch(
+        "tokenspeed_kernel.selection.current_platform", return_value=mi350_platform
+    ):
+        plan = moe_plan(
+            "mxfp4",
+            input_dtype=torch.bfloat16,
+            activation="swiglu" if profile.has_bias else "silu",
+            routing_mode="precomputed_topk",
+            a2a_backend="petit_gluon",
+            ep_size=8,
+            ispp=profile.logical_intermediate,
+            hidden=profile.model_dim,
+            swiglu_form="generalized" if profile.has_bias else None,
+            activation_clamped=profile.has_bias,
+            expert_id_repeats=False,
+            internal_activation_dtype="mxfp4",
+            with_bias=profile.has_bias,
+            fast_math=True,
+            solution="gluon",
+        )
+
+    assert plan["solution"] == "gluon"
+    assert plan["apply_kernel_name"] == "gluon_petit_mxfp4_megamoe_apply"
+    assert plan["weight_preprocessor"] is gluon_petit_mxfp4_megamoe_weights
+    assert plan["a2a_backend"] == "petit_gluon"
 
 
 def _gpt_oss_layer() -> SimpleNamespace:
@@ -171,7 +201,7 @@ def test_weight_preprocessor_repacks_and_releases_source_parameters() -> None:
         ),
         mock.patch("tokenspeed_kernel.ops.moe.gluon.petit.torch.cuda.empty_cache"),
     ):
-        petit_gluon_mxfp4_megamoe_weights(plan={}, w=module)
+        gluon_petit_mxfp4_megamoe_weights(plan={}, w=module)
 
     assert module.petit_gluon_profile == profile
     assert module.petit_gluon_w13_weight.shape == (2, 64, 256)
@@ -223,7 +253,7 @@ def test_apply_keeps_zero_token_rank_in_collective() -> None:
         "tokenspeed_kernel.ops.moe.gluon.petit._get_workspace",
         return_value=workspace,
     ):
-        output = petit_gluon_mxfp4_megamoe_apply(
+        output = gluon_petit_mxfp4_megamoe_apply(
             plan={},
             x=x,
             w=layer,
@@ -249,7 +279,7 @@ def test_apply_rejects_more_than_workspace_capacity() -> None:
     x = torch.empty((1025, 64), dtype=torch.bfloat16)
 
     with pytest.raises(ValueError, match="more than 1024 tokens"):
-        petit_gluon_mxfp4_megamoe_apply(
+        gluon_petit_mxfp4_megamoe_apply(
             plan={},
             x=x,
             w=SimpleNamespace(),
