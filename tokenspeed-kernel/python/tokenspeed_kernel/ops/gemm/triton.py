@@ -1278,8 +1278,7 @@ def triton_mm_mxfp4(
     name="triton_mm_fp8_scaled",
     solution="triton",
     capability=CapabilityRequirement(
-        min_arch_version=ArchVersion(10, 0),
-        vendors=frozenset({"nvidia"}),
+        vendors=frozenset({"amd", "nvidia"}),
     ),
     signatures=_FP8_SCALED_FORMAT_SIGNATURES,
     traits={

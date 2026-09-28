@@ -94,7 +94,7 @@ def _flatten_to_2d(x: torch.Tensor):
         if x.stride(d) != expected:
             raise ValueError(
                 f"cannot flatten dim {d}: stride={x.stride(d)} but expected "
-                f"shape[{d+1}]*stride[{d+1}]={expected}. Tensor shape={tuple(x.shape)}, "
+                f"shape[{d + 1}]*stride[{d + 1}]={expected}. Tensor shape={tuple(x.shape)}, "
                 f"stride={tuple(x.stride())}."
             )
     return M, N, row_stride
@@ -363,7 +363,7 @@ def triton_quantize_fp8(
     capability=CapabilityRequirement(vendors=frozenset({"amd", "nvidia"})),
     signatures=format_signatures("x", "dense", {torch.bfloat16, torch.float16}),
     traits={
-        "granularity": frozenset({"token_group_32", "token_group_128"}),
+        "granularity": frozenset({"token", "token_group_32", "token_group_128"}),
         "scale_encoding": frozenset({"float32"}),
     },
     priority=Priority.PORTABLE,
@@ -375,6 +375,8 @@ def triton_quantize_fp8_with_scale(
     scale_encoding: str = "float32",
     enable_pdl: bool = False,
 ) -> tuple[torch.Tensor, torch.Tensor]:
+    if granularity == "token" and scale_encoding == "float32":
+        return _fp8_token_group_quantize(x.contiguous(), x.shape[-1])
     if granularity != "token_group" or group_size not in {32, 128}:
         raise ValueError(
             "triton FP8 dynamic quantization supports only "

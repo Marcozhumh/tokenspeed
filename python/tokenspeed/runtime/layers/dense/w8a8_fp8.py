@@ -37,7 +37,6 @@ from tokenspeed.runtime.layers.quantization.w8a8_fp8 import W8A8Fp8Config
 
 
 class W8A8Fp8LinearMethod(LinearMethodBase):
-
     def __init__(self, quantization_config: W8A8Fp8Config):
         self.quantization_config = quantization_config
 
@@ -116,7 +115,9 @@ class W8A8Fp8LinearMethod(LinearMethodBase):
         input_2d = input.view(-1, input.shape[-1])
         output_shape = [*input.shape[:-1], weight.shape[1]]
 
-        qinput, x_scale = per_token_quant_fp8(input_2d)
+        qinput, x_scale = tokenspeed_kernel.quantize_fp8_with_scale(
+            input_2d, granularity="token", scale_encoding="float32"
+        )
 
         qinput = qinput.view(-1, qinput.shape[-1])
 
@@ -126,6 +127,7 @@ class W8A8Fp8LinearMethod(LinearMethodBase):
             A_scales=x_scale,
             B_scales=weight_scale,
             out_dtype=input.dtype,
+            quant="fp8",
         )
         if bias is not None:
             output = output + bias
