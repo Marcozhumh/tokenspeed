@@ -35,6 +35,7 @@ from lib.moe.rocm.mem.input_mxfp4_packed import PackedInputState
 from lib.moe.rocm.memory_ops import MakeBufferResource
 from lib.tal.tensor_ops import atomic_add, atomic_or, load_words, store_words
 from triton.experimental.gluon import language as l
+from utils import assert_no_triton_compile
 
 pytestmark = pytest.mark.skipif(
     not torch.cuda.is_available()
@@ -214,3 +215,95 @@ def test_tensor_quantization_padding_and_zero_groups(groups):
     )
     expected[1:, groups * 16 : groups * 16 + groups] = 127
     torch.testing.assert_close(out, expected, atol=0, rtol=0)
+
+
+@pytest.mark.parametrize(
+    ("num_experts", "topk", "model_dim", "activation_function", "has_bias"),
+    (
+        (
+            128,
+            4,
+            2880,
+            petit_kernel.MegaMoeActivationFunction.swiglu,
+            True,
+        ),
+        (
+            384,
+            6,
+            7168,
+            petit_kernel.MegaMoeActivationFunction.silu,
+            False,
+        ),
+    ),
+)
+@pytest.mark.parametrize("num_tokens", (1, 256, 1024))
+def test_token_counts_do_not_recompile(
+    num_tokens: int,
+    num_experts: int,
+    topk: int,
+    model_dim: int,
+    activation_function: petit_kernel.MegaMoeActivationFunction,
+    has_bias: bool,
+) -> None:
+    # New token counts must not trigger JIT compilation during serving.
+    mega_moe = importlib.import_module("lib.moe.rocm.mega_moe")
+    config = petit_kernel.MegaMoeConfig(
+        world_size=8,
+        num_experts=num_experts,
+        topk=topk,
+        model_dim=model_dim,
+        activation=petit_kernel.MegaMoeActivation.mxfp4,
+        activation_function=activation_function,
+        stages=petit_kernel.MegaMoeStages.two_stage,
+        inter_dim=3072,
+        has_bias=has_bias,
+    )
+    adapter = mega_moe._MegaMoESolutions()[config._solution_id_for_tokens(num_tokens)]
+    stage1, _, combine = adapter.Kernels(
+        True,
+        num_tokens >= 256,
+        num_tokens >= (1024 if num_experts == 128 else 256),
+    )
+    device = torch.device("cuda", 0)
+    uint8 = torch.empty(1, dtype=torch.uint8, device=device)
+    int32 = torch.empty(1, dtype=torch.int32, device=device)
+    float32 = torch.empty(1, dtype=torch.float32, device=device)
+    bfloat16 = torch.empty(1, dtype=torch.bfloat16, device=device)
+    bias = bfloat16 if has_bias else None
+
+    # Warm each runtime integer specialization class before varying row counts.
+    def warm_rows(rows):
+        mega_moe.MegaMoEStage1.warmup(
+            uint8,
+            uint8,
+            rows,
+            bias,
+            uint8,
+            0,
+            uint8,
+            int32,
+            float32,
+            stage1,
+            grid=(stage1.kNumSMs,),
+            num_warps=stage1.kNumWarps,
+            enable_fp_fusion=False,
+        )
+        mega_moe.MegaMoECombine.warmup(
+            bfloat16,
+            rows,
+            config.compute_model_dim,
+            uint8,
+            0,
+            combine,
+            grid=(combine.kNumSMs,),
+            num_warps=combine.kNumWarps,
+            enable_fp_fusion=False,
+        )
+
+    for rows in (0, 1, 2, 16):
+        warm_rows(rows)
+    with assert_no_triton_compile(mega_moe.MegaMoEStage1), assert_no_triton_compile(
+        mega_moe.MegaMoECombine
+    ):
+        for rows in (3, 17, 32, 63, 127, 256, 1024):
+            warm_rows(rows)
