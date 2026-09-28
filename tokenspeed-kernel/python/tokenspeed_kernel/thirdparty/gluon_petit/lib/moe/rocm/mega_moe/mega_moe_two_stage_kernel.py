@@ -40,6 +40,16 @@ from triton.experimental.gluon import language as l
 
 
 class MegaMoETwoStageCommComputeKernel(DeviceTemplate):
+    """Dispatch tokens and compute both expert projections in separate launches.
+
+    Config defines expert layouts, compute tiles, and workspace geometry.
+    kExternalInputs selects caller-provided packed tokens and routing tensors;
+    otherwise dispatch reads inputs from the symmetric workspace.
+    Stage one publishes activated MXFP4 intermediates; stage two writes weighted
+    contributions to source ranks. Launch both stages, then MegaMoECombine, on
+    the same stream and workspace on every rank, including ranks with no tokens.
+    """
+
     def __init__(self, Config, kExternalInputs):
         self._key = (Config.cache_key, kExternalInputs)
         self.Config = Config
