@@ -13,7 +13,8 @@ def runtime():
         name="gluon_petit_vmm",
         sources=[str(root / "vmm_symmetric_heap.cc"), str(root / "bindings.cc")],
         extra_include_paths=[str(Path(ROCM_HOME) / "include")],
-        extra_cflags=["-O2", "-std=c++17", "-D__HIP_PLATFORM_AMD__"],
+        # Let PyTorch select the C++ standard required by its headers.
+        extra_cflags=["-O2", "-D__HIP_PLATFORM_AMD__"],
         extra_ldflags=["-L" + str(Path(ROCM_HOME) / "lib"), "-lamdhip64"],
         with_cuda=False,
     )
