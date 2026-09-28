@@ -308,86 +308,58 @@ def _slice_inputs(inputs: Any, num_tokens: int) -> Any:
 
 
 def gluon_petit_mxfp4_megamoe_weights(plan: dict, w: torch.nn.Module) -> None:
-    """Repack loaded serialized MXFP4 expert weights for Gluon Petit.
+    """Repack K3 weights on CPU for this isolated serving experiment.
 
-    Args:
-        plan: Selected TokenSpeed MoE plan. Petit needs no extra plan fields.
-        w: MoE layer whose loaded weights are replaced with Petit layouts.
+    Reuse the original GPU storage: K3's dimensions already match the padded
+    layout, so no second GPU copy or GPU padding allocation is required.
     """
     del plan
     profile = _validate_layer(w)
+    if profile != _KIMI_K3_PROFILE:
+        raise ValueError("This isolated CPU repacking experiment requires Kimi K3")
     w.gluon_petit_profile = profile
-    _get_workspace(w.w13_weight.device, profile)
+    device = w.w13_weight.device
     petit_kernel = _import_petit_kernel()
-
-    w13 = w.w13_weight.detach().contiguous()
-    s13 = w.w13_weight_scale.detach().contiguous()
-    if profile.has_bias:
-        w13 = _deinterleave_gate_up(w13)
-        s13 = _deinterleave_gate_up(s13)
-    w13, s13 = _pad_gate_up_pair(w13, s13, profile)
-    compute_model_dim = (profile.model_dim + 511) // 512 * 512
-    w2, s2 = _pad_mxfp4_pair(
-        w.w2_weight.detach().contiguous(),
-        w.w2_weight_scale.detach().contiguous(),
-        rows=compute_model_dim,
-        columns=profile.inter_dim,
-    )
     layout = petit_kernel.MoeKernelLayout.native_mxfp4
-    w13, s13 = petit_kernel.repack_moe_kernel_layout(
-        w13,
-        s13,
-        layout=layout,
-        petit_format=True,
-    )
-    w2, s2 = petit_kernel.repack_moe_kernel_layout(
-        w2,
-        s2,
-        layout=layout,
-        petit_format=True,
-    )
+    with torch.no_grad():
+        for weight, scale, gate_up in (
+            (w.w13_weight, w.w13_weight_scale, True),
+            (w.w2_weight, w.w2_weight_scale, False),
+        ):
+            cpu_weight = weight.detach().cpu()
+            cpu_scale = scale.detach().cpu()
+            if gate_up:
+                cpu_weight, cpu_scale = _pad_gate_up_pair(
+                    cpu_weight, cpu_scale, profile
+                )
+            else:
+                cpu_weight, cpu_scale = _pad_mxfp4_pair(
+                    cpu_weight,
+                    cpu_scale,
+                    rows=(profile.model_dim + 511) // 512 * 512,
+                    columns=profile.inter_dim,
+                )
+            packed_weight, packed_scale = petit_kernel.repack_moe_kernel_layout(
+                cpu_weight, cpu_scale, layout=layout, petit_format=True
+            )
+            if packed_weight.shape != weight.shape or packed_scale.shape != scale.shape:
+                raise ValueError(
+                    "CPU repacking requires matching source and target shapes"
+                )
+            weight.copy_(packed_weight)
+            scale.copy_(packed_scale)
+            del cpu_weight, cpu_scale, packed_weight, packed_scale
 
-    b13 = b2 = None
-    if profile.has_bias:
-        b13 = _deinterleave_gate_up(w.w13_weight_bias.detach().contiguous())
-        logical_intermediate = b13.shape[1] // 2
-        padded_b13 = b13.new_zeros((b13.shape[0], 2, profile.inter_dim))
-        padded_b13[:, :, :logical_intermediate].copy_(
-            b13.reshape(b13.shape[0], 2, logical_intermediate)
-        )
-        b13 = petit_kernel.repack_moe_kernel_layout(
-            padded_b13.reshape(-1, profile.inter_dim),
-            None,
-            layout=layout,
-            petit_format=True,
-        ).reshape(b13.shape[0], -1)
-        padded_b2 = w.w2_weight_bias.new_zeros(
-            (w.w2_weight_bias.shape[0], profile.inter_dim)
-        )
-        padded_b2[:, : profile.model_dim].copy_(w.w2_weight_bias.detach())
-        b2 = petit_kernel.repack_moe_kernel_layout(
-            padded_b2.contiguous(),
-            None,
-            layout=layout,
-            petit_format=True,
-        )
-
-    w.gluon_petit_w13_weight = w13.contiguous()
-    w.gluon_petit_w2_weight = w2.contiguous()
-    w.gluon_petit_w13_scale = s13.contiguous()
-    w.gluon_petit_w2_scale = s2.contiguous()
-    w.gluon_petit_w13_bias = None if b13 is None else b13.contiguous()
-    w.gluon_petit_w2_bias = None if b2 is None else b2.contiguous()
-    for name in (
-        "w13_weight",
-        "w2_weight",
-        "w13_weight_scale",
-        "w2_weight_scale",
-        "w13_weight_bias",
-        "w2_weight_bias",
-    ):
+    w.gluon_petit_w13_weight = w.w13_weight.detach()
+    w.gluon_petit_w2_weight = w.w2_weight.detach()
+    w.gluon_petit_w13_scale = w.w13_weight_scale.detach()
+    w.gluon_petit_w2_scale = w.w2_weight_scale.detach()
+    w.gluon_petit_w13_bias = None
+    w.gluon_petit_w2_bias = None
+    torch.cuda.synchronize(device)
+    for name in ("w13_weight", "w2_weight", "w13_weight_scale", "w2_weight_scale"):
         _release_parameter(w, name)
-    torch.cuda.empty_cache()
+    _get_workspace(device, profile)
 
 
 @register_kernel(
@@ -462,8 +434,7 @@ def gluon_petit_mxfp4_megamoe_apply(
         and max_num_tokens_per_gpu > _MAX_TOKENS_PER_RANK
     ):
         raise ValueError(
-            "Gluon Petit MegaMoE per-rank token count exceeds its "
-            "1024-token capacity"
+            "Gluon Petit MegaMoE per-rank token count exceeds its 1024-token capacity"
         )
     num_tokens = int(x.shape[0])
     if num_tokens > _MAX_TOKENS_PER_RANK:
