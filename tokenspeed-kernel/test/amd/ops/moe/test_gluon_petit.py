@@ -27,6 +27,7 @@ from tokenspeed_kernel.ops.moe import moe_plan
 from tokenspeed_kernel.ops.moe.gluon.petit import (
     _DSV4_PROFILE,
     _GPT_OSS_120B_PROFILE,
+    _KIMI_K3_PROFILE,
     _Profile,
     _validate_layer,
     gluon_petit_mxfp4_megamoe_apply,
@@ -35,7 +36,9 @@ from tokenspeed_kernel.ops.moe.gluon.petit import (
 from tokenspeed_kernel.selection import NoKernelFoundError
 
 
-@pytest.mark.parametrize("profile", [_GPT_OSS_120B_PROFILE, _DSV4_PROFILE])
+@pytest.mark.parametrize(
+    "profile", [_GPT_OSS_120B_PROFILE, _DSV4_PROFILE, _KIMI_K3_PROFILE]
+)
 def test_petit_plan_selects_gluon_registration(profile, mi350_platform) -> None:
     with mock.patch(
         "tokenspeed_kernel.selection.current_platform", return_value=mi350_platform
@@ -43,7 +46,7 @@ def test_petit_plan_selects_gluon_registration(profile, mi350_platform) -> None:
         plan = moe_plan(
             "mxfp4",
             input_dtype=torch.bfloat16,
-            activation="swiglu" if profile.has_bias else "silu",
+            activation=profile.activation,
             routing_mode="precomputed_topk",
             a2a_backend="gluon_petit",
             ep_size=8,
@@ -133,6 +136,47 @@ def test_validate_layer_preserves_dsv4_activation_contract() -> None:
         _validate_layer(_dsv4_layer(10.0))
 
 
+@pytest.mark.parametrize(
+    "overrides,error",
+    [
+        ({}, None),
+        ({"activation": "silu"}, "SiTU"),
+        ({"activation_situ_beta": 3.0}, "SiTU"),
+        ({"activation_situ_linear_beta": 24.0}, "SiTU"),
+        ({"swiglu_beta": 1.0}, "SiTU"),
+        ({"swiglu_arg": SimpleNamespace(alpha=None, limit=7.0)}, "SiTU"),
+        ({"w13_input_layout": "interleaved"}, "concatenated"),
+        ({"w13_weight_bias": object()}, "bias"),
+        ({"w2_weight_bias": object()}, "bias"),
+    ],
+)
+def test_validate_layer_preserves_kimi_k3_activation_contract(overrides, error):
+    values = dict(
+        num_experts=896,
+        top_k=16,
+        hidden_size=3584,
+        intermediate_size=3072,
+        ep_size=8,
+        tp_size=1,
+        num_local_experts=112,
+        activation="situ",
+        activation_situ_beta=4.0,
+        activation_situ_linear_beta=25.0,
+        swiglu_beta=None,
+        swiglu_arg=None,
+        w13_input_layout="concatenated",
+        w13_weight_bias=None,
+        w2_weight_bias=None,
+    )
+    values.update(overrides)
+    layer = SimpleNamespace(**values)
+    if error:
+        with pytest.raises(ValueError, match=error):
+            _validate_layer(layer)
+    else:
+        assert _validate_layer(layer) == _KIMI_K3_PROFILE
+
+
 def _register_parameter(
     module: torch.nn.Module,
     name: str,
@@ -160,6 +204,7 @@ def test_weight_preprocessor_repacks_and_releases_source_parameters() -> None:
         logical_intermediate=32,
         inter_dim=32,
         has_bias=False,
+        activation="silu",
     )
     layouts = []
 
@@ -219,6 +264,7 @@ def test_apply_keeps_zero_token_rank_in_collective() -> None:
         logical_intermediate=32,
         inter_dim=32,
         has_bias=False,
+        activation="silu",
     )
     inputs = SimpleNamespace(
         tokens=torch.empty((4, 32), dtype=torch.uint8),

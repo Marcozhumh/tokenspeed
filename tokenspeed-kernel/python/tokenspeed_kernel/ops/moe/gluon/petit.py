@@ -61,6 +61,7 @@ class _Profile:
     logical_intermediate: int
     inter_dim: int
     has_bias: bool
+    activation: str
 
 
 _GPT_OSS_120B_PROFILE = _Profile(
@@ -71,6 +72,7 @@ _GPT_OSS_120B_PROFILE = _Profile(
     logical_intermediate=2880,
     inter_dim=3072,
     has_bias=True,
+    activation="swiglu",
 )
 _DSV4_PROFILE = _Profile(
     name="dsv4",
@@ -80,8 +82,19 @@ _DSV4_PROFILE = _Profile(
     logical_intermediate=3072,
     inter_dim=3072,
     has_bias=False,
+    activation="silu",
 )
-_PROFILES = (_GPT_OSS_120B_PROFILE, _DSV4_PROFILE)
+_KIMI_K3_PROFILE = _Profile(
+    name="kimi_k3",
+    num_experts=896,
+    top_k=16,
+    model_dim=3584,
+    logical_intermediate=3072,
+    inter_dim=3072,
+    has_bias=False,
+    activation="situ",
+)
+_PROFILES = (_GPT_OSS_120B_PROFILE, _DSV4_PROFILE, _KIMI_K3_PROFILE)
 
 
 def _release_parameter(module: torch.nn.Module, name: str) -> None:
@@ -193,6 +206,21 @@ def _validate_layer(w: torch.nn.Module) -> _Profile:
             raise ValueError("Gluon Petit GPT-OSS MegaMoE requires expert biases")
         return profile
 
+    if profile is _KIMI_K3_PROFILE:
+        if (
+            w.activation != "situ"
+            or w.activation_situ_beta != 4.0
+            or w.activation_situ_linear_beta != 25.0
+            or w.swiglu_beta is not None
+            or w.swiglu_arg is not None
+        ):
+            raise ValueError("Gluon Petit Kimi K3 requires SiTU beta=4, linear_beta=25")
+        if w.w13_input_layout != "concatenated":
+            raise ValueError("Gluon Petit Kimi K3 requires concatenated W13 input")
+        if w.w13_weight_bias is not None or w.w2_weight_bias is not None:
+            raise ValueError("Gluon Petit Kimi K3 requires bias-free experts")
+        return profile
+
     if w.activation not in {"silu", "swiglu"} or w.swiglu_beta is not None:
         raise ValueError("Gluon Petit DSV4 MegaMoE requires standard SiLU")
     if w.w13_input_layout != "concatenated":
@@ -252,10 +280,8 @@ def _get_workspace(device: torch.device, profile: _Profile) -> _Workspace:
         topk=profile.top_k,
         model_dim=profile.model_dim,
         activation=petit_kernel.MegaMoeActivation.mxfp4,
-        activation_function=(
-            petit_kernel.MegaMoeActivationFunction.swiglu
-            if profile.has_bias
-            else petit_kernel.MegaMoeActivationFunction.silu
+        activation_function=petit_kernel.MegaMoeActivationFunction(
+            "kimi_situ" if profile.activation == "situ" else profile.activation
         ),
         stages=petit_kernel.MegaMoeStages.two_stage,
         inter_dim=profile.inter_dim,
@@ -375,7 +401,7 @@ def gluon_petit_mxfp4_megamoe_weights(plan: dict, w: torch.nn.Module) -> None:
     signatures=format_signatures("x", "dense", {torch.bfloat16}),
     traits={
         "weight_dtype": frozenset({"mxfp4"}),
-        "activation": frozenset({"swiglu", "silu"}),
+        "activation": frozenset({"swiglu", "silu", "situ"}),
         "routing_mode": frozenset({"precomputed_topk"}),
         "supports_deferred_finalize": frozenset({False}),
         "supports_ep": frozenset({True}),
