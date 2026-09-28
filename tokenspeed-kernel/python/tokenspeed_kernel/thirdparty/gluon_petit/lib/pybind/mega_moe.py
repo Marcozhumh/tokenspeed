@@ -6,8 +6,6 @@ from lib.moe.rocm.mega_moe import (
     MegaMoECompute,
     MegaMoEParams,
     MegaMoEQuantizeMxFp4,
-    kMegaMoEProfileCounterCount,
-    kMegaMoEProfileCtas,
 )
 from lib.pybind.vmm_symmetric_heap import runtime
 
@@ -165,7 +163,6 @@ def MegaMoe(
     input_tokens=None,
     input_topk_ids=None,
     input_topk_weights=None,
-    profile=None,
 ):
     info = LookupSolution(heap, solution_id)
     device = heap.device_index
@@ -212,12 +209,6 @@ def MegaMoe(
         for name, tensor in (("w13_bias", w13_bias), ("w2_bias", w2_bias)):
             if tensor is not None:
                 CheckTensor(tensor, torch.bfloat16, device, name)
-        if profile is not None:
-            CheckTensor(profile, torch.int64, device, "profile")
-            _check(
-                profile.shape == (kMegaMoEProfileCounterCount, kMegaMoEProfileCtas),
-                "profile must have shape [35, 3072]",
-            )
         external_count = sum(
             t is not None for t in (input_tokens, input_topk_ids, input_topk_weights)
         )
@@ -263,7 +254,6 @@ def MegaMoe(
             heap.local_tensor().view(torch.uint8),
             heap.rank,
             torch.cuda.current_stream(device),
-            profile,
         )
         CheckKernelStatus(MegaMoECompute(params, solution_id), "MegaMoE")
     return out

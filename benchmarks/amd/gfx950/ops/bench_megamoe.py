@@ -154,12 +154,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
-        "--petit-profile-samples",
-        type=int,
-        default=0,
-        help="Collect this many per-CTA kernel phase samples after normal Petit timing.",
-    )
-    parser.add_argument(
         "--profile-ranges",
         action="store_true",
         help="Emit NVTX/ROCTx ranges around benchmark stages. Off by default because it can perturb ROCm timings.",
@@ -219,8 +213,6 @@ def validate_args(args: argparse.Namespace) -> None:
         raise ValueError("--warmup must be >= 0 and --repeat must be > 0")
     if args.graph_iters <= 0:
         raise ValueError("--graph-iters must be positive")
-    if args.petit_profile_samples < 0:
-        raise ValueError("--petit-profile-samples must be nonnegative")
     if args.gsm8k_skew_routing and args.ep_size != 8:
         raise ValueError("--gsm8k-skew-routing requires EP=8")
     if (args.routing_trace_prefix is None) != (args.routing_trace_ordinals is None):
@@ -595,7 +587,6 @@ def make_petit_backend(
     device: torch.device,
 ) -> tuple[
     Callable[[], torch.Tensor],
-    Callable[[], tuple[torch.Tensor, torch.Tensor]],
     Callable[[], None],
     dict[str, Callable[[], None]],
 ]:
@@ -623,14 +614,6 @@ def make_petit_backend(
     if views.scales is None:
         raise RuntimeError("MXFP4 MegaMoE workspace is missing activation scales")
     out = torch.empty((m, args.padded_hidden_size), dtype=torch.bfloat16, device=device)
-    profile = torch.zeros(
-        (
-            len(petit_kernel._MEGA_MOE_PROFILE_COUNTER_NAMES),
-            petit_kernel._MEGA_MOE_PROFILE_CTAS,
-        ),
-        dtype=torch.int64,
-        device=device,
-    )
     state: dict[str, torch.Tensor] = {}
 
     def input_views() -> petit_kernel.MegaMoeInputViews:
@@ -664,7 +647,7 @@ def make_petit_backend(
             copy_expert_ids()
             copy_expert_weights()
 
-    def run(profile_output: torch.Tensor | None = None) -> torch.Tensor:
+    def compute() -> torch.Tensor:
         return config.run(
             heap,
             w1,
@@ -676,15 +659,7 @@ def make_petit_backend(
             w2_bias=w2_bias if args.bias else None,
             out=out,
             inputs=input_views() if topo.ep_size > 1 else None,
-            profile=profile_output,
         )
-
-    def compute() -> torch.Tensor:
-        return run()
-
-    def profile_compute() -> tuple[torch.Tensor, torch.Tensor]:
-        profile.zero_()
-        return run(profile), profile
 
     components = {"prepare_quantize": quantize}
     if topo.ep_size == 1:
@@ -694,7 +669,7 @@ def make_petit_backend(
                 "prepare_copy_expert_weights": copy_expert_weights,
             }
         )
-    return compute, profile_compute, prepare, components
+    return compute, prepare, components
 
 
 def event_ms(fn: Callable[[], object], repeat: int) -> float:
@@ -854,7 +829,7 @@ def summarize_trace_replay(
 def write_trace_summary(summary: dict[str, object], args: argparse.Namespace) -> None:
     # A trace aggregate has a different schema from the per-layer CSV rows, so
     # keep it in JSONL and stdout. This also avoids silently padding a CSV with
-    # backend-specific stage/profile columns.
+    # backend-specific stage columns.
     if args.jsonl is not None:
         args.jsonl.parent.mkdir(parents=True, exist_ok=True)
         with args.jsonl.open("a", encoding="utf-8") as f:
@@ -873,155 +848,6 @@ def write_trace_summary(summary: dict[str, object], args: argparse.Namespace) ->
             f"valid_output={summary['valid_output']}",
             flush=True,
         )
-
-
-def collect_petit_profile(
-    profile_compute: Callable[[], tuple[torch.Tensor, torch.Tensor]],
-    samples: int,
-    topo: Topology,
-) -> dict[str, object]:
-    if samples == 0:
-        return {}
-    names = petit_kernel._MEGA_MOE_PROFILE_COUNTER_NAMES
-    ctas = petit_kernel._MEGA_MOE_PROFILE_CTAS
-    gathered_samples: list[torch.Tensor] = []
-    dist.barrier()
-    for _ in range(samples):
-        # Direct push begins with a cross-rank launch-admission handshake.
-        # Align every eager profiling launch so Python scheduling skew is not
-        # misreported as device-side admission cost.
-        dist.barrier()
-        _, local = profile_compute()
-        gathered = torch.empty(
-            (topo.world_size * len(names), ctas),
-            dtype=torch.int64,
-            device=local.device,
-        )
-        dist.all_gather_into_tensor(gathered, local)
-        torch.cuda.synchronize()
-        gathered_samples.append(gathered.view(topo.world_size, len(names), ctas).cpu())
-
-    values = torch.stack(gathered_samples).to(torch.float64)
-    combine_ctas = 128
-    count_names = {"stage1_work_count", "stage2_work_count"}
-    combine_names = {
-        "combine_epoch_load",
-        "combine_grid_sync",
-        "combine_xgpu_handoff",
-        "combine_reduce",
-        "combine_total",
-    }
-    summary: dict[str, object] = {"petit_profile_samples": samples}
-    for counter, name in enumerate(names):
-        active_ctas = combine_ctas if name in combine_names else ctas
-        counter_values = values[:, :, counter, :active_ctas]
-        if name in count_names:
-            per_sample = counter_values.sum(dim=2).amax(dim=1)
-            suffix = "max_rank_sum"
-        else:
-            per_sample = counter_values.amax(dim=(1, 2))
-            suffix = "max_rank_cta_cycles"
-        summary[f"profile_{name}_{suffix}_p50"] = float(
-            torch.quantile(per_sample, 0.5).item()
-        )
-        summary[f"profile_{name}_{suffix}_p90"] = float(
-            torch.quantile(per_sample, 0.9).item()
-        )
-
-        if topo.world_size > 2:
-            rank2_values = counter_values[:, 2, :]
-            if name in count_names:
-                rank2_per_sample = rank2_values.sum(dim=1)
-                rank2_suffix = "sum"
-            else:
-                rank2_per_sample = rank2_values.amax(dim=1)
-                rank2_suffix = "max_cta_cycles"
-            summary[f"profile_rank2_{name}_{rank2_suffix}_p50"] = float(
-                torch.quantile(rank2_per_sample, 0.5).item()
-            )
-            summary[f"profile_rank2_{name}_{rank2_suffix}_p90"] = float(
-                torch.quantile(rank2_per_sample, 0.9).item()
-            )
-
-    # Preserve a coherent phase decomposition: select one median sample and
-    # the exact rank/CTA that maximizes each kernel's total, rather than
-    # adding independently selected maxima from unrelated CTAs.
-    main_total = values[:, :, names.index("stage1_kernel_total"), :]
-    main_max = main_total.amax(dim=(1, 2))
-    median_sample = int(torch.argsort(main_max)[len(main_max) // 2].item())
-    flat_main = int(main_total[median_sample].argmax().item())
-    main_rank, main_cta = divmod(flat_main, ctas)
-    main_detail = {
-        name: int(values[median_sample, main_rank, i, main_cta].item())
-        for i, name in enumerate(names)
-        if i < 13 or name.startswith(("stage1_", "dispatch_"))
-    }
-    main_detail["stage1_kernel_total"] = int(
-        values[
-            median_sample,
-            main_rank,
-            names.index("stage1_kernel_total"),
-            main_cta,
-        ].item()
-    )
-    main_detail["rank"] = main_rank
-    main_detail["cta"] = main_cta
-    summary["profile_main_critical_cta_p50_json"] = json.dumps(main_detail)
-
-    if topo.world_size > 2:
-        rank2_total = main_total[:, 2, :]
-        rank2_max = rank2_total.amax(dim=1)
-        rank2_median_sample = int(torch.argsort(rank2_max)[len(rank2_max) // 2].item())
-        rank2_cta = int(rank2_total[rank2_median_sample].argmax().item())
-        rank2_detail = {
-            name: int(values[rank2_median_sample, 2, i, rank2_cta].item())
-            for i, name in enumerate(names)
-            if i < 13 or name.startswith(("stage1_", "dispatch_"))
-        }
-        rank2_detail["stage1_kernel_total"] = int(
-            rank2_total[rank2_median_sample, rank2_cta].item()
-        )
-        rank2_detail["rank"] = 2
-        rank2_detail["cta"] = rank2_cta
-        summary["profile_rank2_main_critical_cta_p50_json"] = json.dumps(rank2_detail)
-
-    stage2_total = values[:, :, names.index("stage2_kernel_total"), :]
-    stage2_max = stage2_total.amax(dim=(1, 2))
-    median_stage2_sample = int(torch.argsort(stage2_max)[len(stage2_max) // 2].item())
-    flat_stage2 = int(stage2_total[median_stage2_sample].argmax().item())
-    stage2_rank, stage2_cta = divmod(flat_stage2, ctas)
-    stage2_detail = {
-        name: int(values[median_stage2_sample, stage2_rank, i, stage2_cta].item())
-        for i, name in enumerate(names[8:13], start=8)
-    }
-    stage2_detail["stage2_kernel_total"] = int(
-        values[
-            median_stage2_sample,
-            stage2_rank,
-            names.index("stage2_kernel_total"),
-            stage2_cta,
-        ].item()
-    )
-    stage2_detail["rank"] = stage2_rank
-    stage2_detail["cta"] = stage2_cta
-    summary["profile_stage2_critical_cta_p50_json"] = json.dumps(stage2_detail)
-
-    combine_total = values[:, :, names.index("combine_total"), :combine_ctas]
-    combine_max = combine_total.amax(dim=(1, 2))
-    median_combine_sample = int(
-        torch.argsort(combine_max)[len(combine_max) // 2].item()
-    )
-    flat_combine = int(combine_total[median_combine_sample].argmax().item())
-    combine_rank, combine_cta = divmod(flat_combine, combine_ctas)
-    combine_detail = {
-        name: int(values[median_combine_sample, combine_rank, i, combine_cta].item())
-        for i, name in enumerate(names)
-        if name in combine_names
-    }
-    combine_detail["rank"] = combine_rank
-    combine_detail["cta"] = combine_cta
-    summary["profile_combine_critical_cta_p50_json"] = json.dumps(combine_detail)
-    return summary
 
 
 def run_one(
@@ -1068,7 +894,6 @@ def run_one(
 
     (
         petit_compute,
-        petit_profile_compute,
         petit_prepare,
         prepare_components,
     ) = make_petit_backend(topo=topo, args=args, m=m, device=device)
@@ -1232,12 +1057,6 @@ def run_one(
         "routing_trace_ordinal": trace_ordinal,
     }
     row.update(stage_times)
-    if args.petit_profile_samples:
-        row.update(
-            collect_petit_profile(
-                petit_profile_compute, args.petit_profile_samples, topo
-            )
-        )
     return row
 
 

@@ -463,5 +463,4 @@ def gluon_petit_mxfp4_megamoe_apply(
         w2_bias=w.gluon_petit_w2_bias,
         out=output,
         inputs=inputs,
-        profile=None,
     )

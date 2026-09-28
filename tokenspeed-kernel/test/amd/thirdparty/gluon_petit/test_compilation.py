@@ -101,7 +101,6 @@ def test_supported_mega_moe_profiles_compile(
     adapter = mega_moe._MegaMoESolutions()[config._solution_id_for_tokens(num_tokens)]
     stage1, stage2, combine = adapter.Kernels(
         True,
-        False,
         num_tokens >= 256,
         num_tokens >= (1024 if num_experts == 128 else 256),
     )
@@ -124,7 +123,6 @@ def test_supported_mega_moe_profiles_compile(
             int32,
             float32,
             stage1,
-            None,
             grid=(stage1.kNumSMs,),
             num_warps=stage1.kNumWarps,
             enable_fp_fusion=False,
@@ -136,7 +134,6 @@ def test_supported_mega_moe_profiles_compile(
             uint8,
             0,
             stage2,
-            None,
             grid=(stage2.kStage2GridBlocks,),
             num_warps=stage2.kNumWarps,
             enable_fp_fusion=False,
@@ -148,7 +145,6 @@ def test_supported_mega_moe_profiles_compile(
             uint8,
             0,
             combine,
-            None,
             grid=(combine.kNumSMs,),
             num_warps=combine.kNumWarps,
             enable_fp_fusion=False,
@@ -168,7 +164,6 @@ def test_supported_mega_moe_profiles_compile(
             int32,
             float32,
             stage1,
-            None,
             grid=(stage1.kNumSMs,),
             num_warps=stage1.kNumWarps,
             enable_fp_fusion=False,
@@ -180,7 +175,6 @@ def test_supported_mega_moe_profiles_compile(
             uint8,
             0,
             combine,
-            None,
             grid=(combine.kNumSMs,),
             num_warps=combine.kNumWarps,
             enable_fp_fusion=False,

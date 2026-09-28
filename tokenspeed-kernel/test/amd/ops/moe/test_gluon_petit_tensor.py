@@ -147,7 +147,7 @@ def test_partial_scale_load_preserves_lds(num_tokens):
     mega = importlib.import_module("lib.moe.rocm.mega_moe")
     stage1, _, _ = mega._MegaMoESolutions()[
         config._solution_id_for_tokens(num_tokens)
-    ].Kernels(True, False, num_tokens >= 256, num_tokens >= 1024)
+    ].Kernels(True, num_tokens >= 256, num_tokens >= 1024)
     policy = stage1.Input
     source = torch.arange(
         policy.kGroupM * policy.kRowStride // 4, dtype=torch.int32, device="cuda"

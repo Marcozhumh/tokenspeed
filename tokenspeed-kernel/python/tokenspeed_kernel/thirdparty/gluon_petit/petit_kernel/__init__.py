@@ -232,48 +232,6 @@ class MegaMoeInputViews:
     expert_weights: torch.Tensor
 
 
-_MEGA_MOE_PROFILE_COUNTER_NAMES = (
-    "dispatch",
-    "local_plan_wait",
-    "scheduler_initialization",
-    "stage1_loop",
-    "stage1_scheduler",
-    "stage1_payload_wait",
-    "stage1_work",
-    "stage1_work_count",
-    "stage2_loop",
-    "stage2_scheduler",
-    "stage2_arrival_wait",
-    "stage2_work",
-    "stage2_work_count",
-    "combine_epoch_load",
-    "combine_grid_sync",
-    "combine_xgpu_handoff",
-    "combine_reduce",
-    "combine_total",
-    "stage1_kernel_total",
-    "stage2_kernel_total",
-    "stage1_prepare",
-    "stage1_matmul",
-    "stage1_quantize_store",
-    "stage1_publish",
-    "dispatch_owner_admission",
-    "dispatch_owner_count",
-    "dispatch_owner_plan",
-    "dispatch_producer_admission_wait",
-    "dispatch_producer_plan_wait",
-    "dispatch_producer_payload",
-    "dispatch_producer_rows",
-    "dispatch_producer_row_copy",
-    "dispatch_producer_publish",
-    "dispatch_producer_fragments",
-    "dispatch_producer_publish_blocks",
-)
-
-
-_MEGA_MOE_PROFILE_CTAS = 3072
-
-
 @dataclass(frozen=True)
 class MegaMoeConfig:
     world_size: int
@@ -437,7 +395,6 @@ class MegaMoeConfig:
         w2_bias: torch.Tensor | None = None,
         out: torch.Tensor | None = None,
         inputs: MegaMoeInputViews | None = None,
-        profile: torch.Tensor | None = None,
     ) -> torch.Tensor:
         num_tokens = int(num_tokens)
         if num_tokens < 0 or num_tokens > self.max_tokens_per_rank:
@@ -488,5 +445,4 @@ class MegaMoeConfig:
             input_tokens,
             input_topk_ids,
             input_topk_weights,
-            profile,
         )
