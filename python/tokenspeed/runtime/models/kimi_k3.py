@@ -109,6 +109,7 @@ from tokenspeed.runtime.execution.forward_step import (
 )
 from tokenspeed.runtime.layers.activation import SituAndMul
 from tokenspeed.runtime.layers.dense.fp8 import Fp8LinearMethod
+from tokenspeed.runtime.layers.dense.w8a8_fp8 import W8A8Fp8LinearMethod
 from tokenspeed.runtime.layers.layernorm import (
     RMSNorm,
 )
@@ -145,7 +146,9 @@ from tokenspeed.runtime.layers.quantization.fp8 import Fp8Config
 from tokenspeed.runtime.layers.quantization.modelopt_mixed import (
     preprocess_fp8_pb_wo_weights,
 )
+from tokenspeed.runtime.layers.quantization.mxfp4 import Mxfp4Config
 from tokenspeed.runtime.layers.quantization.utils import block_dequant
+from tokenspeed.runtime.layers.quantization.w8a8_fp8 import W8A8Fp8Config
 from tokenspeed.runtime.layers.shared_expert_tp import (
     SharedExpertCommunication,
     initialize_shared_expert_group,
@@ -229,6 +232,37 @@ class KimiK3Vision(MoonViTVisionPath):
 # ===----------------------------------------------------------------------=== #
 
 
+def _preprocess_quark_channel_fp8(weights, quant_config):
+    if not isinstance(quant_config, Mxfp4Config) or not quant_config.layer_quant_config:
+        yield from weights
+        return
+    pending = {}
+    for name, value in weights:
+        module = name.rsplit(".", 1)[0]
+        if not quant_config.uses_channel_fp8(module) or not name.endswith(
+            (".weight", ".weight_scale")
+        ):
+            yield name, value
+            continue
+        if name.endswith(".weight_scale"):
+            value = value.reshape(-1, 1)
+        if module.endswith(".f_b_proj"):
+            entry = pending.setdefault(module, {})
+            entry[name.rsplit(".", 1)[1]] = value
+            if len(entry) == 2:
+                yield (
+                    module + ".weight",
+                    (entry["weight"].float() * entry["weight_scale"]).to(
+                        torch.bfloat16
+                    ),
+                )
+                del pending[module]
+        else:
+            yield name, value
+    if pending:
+        raise ValueError(f"Missing Quark weight/scale pairs: {list(pending)}")
+
+
 class KimiLinearMLP(nn.Module):
     """Dense / shared-expert MLP with the SiTU (SituGLU) activation.
 
@@ -307,7 +341,7 @@ class KimiLinearMLP(nn.Module):
     ) -> torch.Tensor:
         if x.size(0) == 0:
             return x
-        if self.is_shared_expert:
+        if self.is_shared_expert and self.gate_up_proj.weight.dtype == torch.bfloat16:
             x = kimi3_shared_situ_projection(
                 x,
                 self.gate_up_proj.weight,
@@ -324,12 +358,10 @@ class KimiLinearMLP(nn.Module):
             return x
         gate_up, _ = self.gate_up_proj(x)
         x = self.act_fn(gate_up)
-        if down_out is not None:
-            # Direct-write partial (unquantized bf16 shared experts only):
-            # lands the TP partial straight into the fused-AR lane slice.
-            torch.mm(x, self.down_proj.weight.t(), out=down_out)
-            return down_out
         x, _ = self.down_proj(x)
+        if down_out is not None:
+            down_out.copy_(x)
+            return down_out
         return x
 
 
@@ -910,6 +942,7 @@ class KimiKDAMergedProj(nn.Module):
         head_dim: int,
         tp_rank: int,
         tp_size: int,
+        fp8_channel_quant: bool,
         fp8_block_quant: bool = False,
     ) -> None:
         super().__init__()
@@ -918,6 +951,8 @@ class KimiKDAMergedProj(nn.Module):
         self.head_dim = head_dim
         self.tp_rank = tp_rank
         self.fp8_block_quant = fp8_block_quant
+        self.fp8_channel_quant = fp8_channel_quant
+        self.quant_method = None
         p = self.proj_local
         self._offsets = {
             "q": 0,
@@ -937,7 +972,23 @@ class KimiKDAMergedProj(nn.Module):
         }
         used = 4 * p + head_dim + self.local_num_heads
         self.used_rows = used
-        if fp8_block_quant:
+        if fp8_channel_quant:
+            total = ceil_div(used, self._ROW_ALIGN) * self._ROW_ALIGN
+            self.quant_method = W8A8Fp8LinearMethod(
+                W8A8Fp8Config(is_checkpoint_fp8_serialized=True)
+            )
+            self.quant_method.create_weights(
+                self,
+                hidden_size,
+                [total],
+                hidden_size,
+                total,
+                torch.bfloat16,
+                weight_loader=self._load_weight,
+            )
+            self.weight.data.zero_()
+            self.weight_scale.data.fill_(1)
+        elif fp8_block_quant:
             if p % 128 or head_dim % 128 or hidden_size % 128:
                 raise ValueError(
                     "FP8 merged KDA projection requires 128-aligned segment "
@@ -970,7 +1021,8 @@ class KimiKDAMergedProj(nn.Module):
             )
             # Padding rows are never read back, but keep them finite.
             self.weight.data[used:].zero_()
-        self.weight.weight_loader = self._load_weight
+        if not fp8_channel_quant:
+            self.weight.weight_loader = self._load_weight
 
     def _load_weight(
         self, param: nn.Parameter, loaded_weight: torch.Tensor, shard_id: str
@@ -1140,6 +1192,8 @@ class KimiLinearKDA(nn.Module):
             tp_rank=tp_rank,
             tp_size=tp_size,
             fp8_block_quant=merged_fp8,
+            fp8_channel_quant=isinstance(quant_config, Mxfp4Config)
+            and quant_config.uses_channel_fp8(add_prefix("q_proj", prefix)),
         )
         # Decay-gate up projection (f_a and beta ride in the merged GEMM).
         self.f_b_proj = _col(self.head_dim, proj, "f_b_proj")
@@ -1217,7 +1271,11 @@ class KimiLinearKDA(nn.Module):
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """Project every KDA hidden-state consumer."""
         proj_local = self.local_num_heads * self.head_dim
-        if isinstance(
+        if self.qkvgb_proj.fp8_channel_quant:
+            if attnres_partial_args is not None:
+                attnres_partial_dual(*attnres_partial_args)
+            output = self.qkvgb_proj.quant_method.apply(self.qkvgb_proj, hidden_states)
+        elif isinstance(
             getattr(self.qkvgb_proj, "quant_method", None),
             Fp8LinearMethod,
         ):
@@ -1858,6 +1916,8 @@ class KimiLinearMoE(nn.Module):
             self.routed_expert_down_proj,
             self.shared_experts.gate_up_proj,
         )
+        if any(module.weight.dtype != torch.bfloat16 for module in modules):
+            return
         # Held so the row views stay alive; deliberately not a registered
         # buffer, which would duplicate every projection in the state dict.
         # Any layout a packed GEMM cannot read is caught downstream by
@@ -3387,6 +3447,7 @@ class KimiLinearForCausalLM(BaseCausalLM):
         fused_qkv_a private layout below.
         """
         weights = preprocess_fp8_pb_wo_weights(weights, self.quant_config)
+        weights = _preprocess_quark_channel_fp8(weights, self.quant_config)
         config = self.config
         stacked_params_mapping = [
             # KDA q/k/v/g/f_a/b stack into qkvgb_proj; MLA's g_proj falls
@@ -3416,6 +3477,11 @@ class KimiLinearForCausalLM(BaseCausalLM):
         fp8_fused_segments = frozenset(_FP8_FUSED_QKV_A_ORDER)
 
         def _try_fp8_fused_assembly(name: str, loaded_weight: torch.Tensor) -> bool:
+            if (
+                isinstance(self.quant_config, Mxfp4Config)
+                and self.quant_config.layer_quant_config
+            ):
+                return False
             is_scale = name.endswith(".weight_scale_inv")
             if not (is_scale or name.endswith(".weight")):
                 return False
@@ -3620,19 +3686,26 @@ class KimiLinearForCausalLM(BaseCausalLM):
             if isinstance(self_attn, KimiLinearMLAAttention):
                 w = self_attn.kv_b_proj.weight
                 if w.dtype in (torch.float8_e4m3fn, torch.float8_e4m3fnuz):
-                    if not hasattr(self_attn.kv_b_proj, "weight_scale_inv"):
+                    if isinstance(
+                        self_attn.kv_b_proj.quant_method, W8A8Fp8LinearMethod
+                    ):
+                        w = (w.float() * self_attn.kv_b_proj.weight_scale).to(
+                            torch.get_default_dtype()
+                        )
+                    elif not hasattr(self_attn.kv_b_proj, "weight_scale_inv"):
                         raise RuntimeError(
                             "kv_b_proj.weight_scale_inv is required for block "
                             "FP8 dequant of the absorbed MLA weights."
                         )
-                    weight_block_size = (
-                        self_attn.kv_b_proj.quant_method.quant_config.weight_block_size
-                    )
-                    w = block_dequant(
-                        w,
-                        self_attn.kv_b_proj.weight_scale_inv,
-                        weight_block_size,
-                    ).to(torch.get_default_dtype())
+                    else:
+                        weight_block_size = (
+                            self_attn.kv_b_proj.quant_method.quant_config.weight_block_size
+                        )
+                        w = block_dequant(
+                            w,
+                            self_attn.kv_b_proj.weight_scale_inv,
+                            weight_block_size,
+                        ).to(torch.get_default_dtype())
                 self_attn.w_kc, self_attn.w_vc = _prepare_mla_kv_b_proj_weights(
                     w, self_attn
                 )

@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping
+from fnmatch import fnmatchcase
 from typing import Any
 
 import torch
@@ -144,7 +145,6 @@ def _normalize_ignored_layer_patterns(patterns: list[str] | None) -> list[str]:
 
 
 class Mxfp4Config(QuantizationConfig):
-
     def __init__(
         self,
         ignored_layers: list[str] | None = None,
@@ -152,6 +152,7 @@ class Mxfp4Config(QuantizationConfig):
         is_w4a8_fp8: bool = False,
         use_dynamic_mxfp4_activations: bool = False,
         quant_method: str | None = None,
+        layer_quant_config: dict | None = None,
     ):
         super().__init__(ignored_layers=ignored_layers)
         self.is_checkpoint_mxfp4_serialized = is_checkpoint_mxfp4_serialized
@@ -159,6 +160,7 @@ class Mxfp4Config(QuantizationConfig):
         self.use_dynamic_mxfp4_activations = use_dynamic_mxfp4_activations
         self.quant_method = quant_method
         self.group_size = 32
+        self.layer_quant_config = layer_quant_config or {}
 
     @classmethod
     def from_config(cls, config):
@@ -171,6 +173,8 @@ class Mxfp4Config(QuantizationConfig):
 
         raw_ignored = cls.get_from_keys_or(config, ["ignored_layers", "exclude"], None)
         ignored_layers = _normalize_ignored_layer_patterns(raw_ignored)
+        if config.get("layer_quant_config"):
+            ignored_layers.append(r"re:.*\.self_attn\.f_b_proj$")
 
         return cls(
             ignored_layers=ignored_layers,
@@ -178,7 +182,28 @@ class Mxfp4Config(QuantizationConfig):
             is_w4a8_fp8=is_w4a8_fp8,
             use_dynamic_mxfp4_activations=use_dynamic_mxfp4_activations,
             quant_method=quant_method,
+            layer_quant_config=config.get("layer_quant_config"),
         )
+
+    def uses_channel_fp8(self, prefix: str) -> bool:
+        for pattern, config in self.layer_quant_config.items():
+            if fnmatchcase(prefix, pattern):
+                weight = config["weight"]
+                activation = config["input_tensors"]
+                if not (
+                    weight["dtype"] == "fp8_e4m3"
+                    and weight["qscheme"] == "per_channel"
+                    and weight["ch_axis"] == 0
+                    and not weight["is_dynamic"]
+                    and activation["dtype"] == "fp8_e4m3"
+                    and activation["qscheme"] == "per_channel"
+                    and activation["is_dynamic"]
+                ):
+                    raise ValueError(
+                        f"Unsupported per-layer Quark quantization: {pattern}"
+                    )
+                return True
+        return False
 
     @classmethod
     def override_quantization_method(cls, hf_quant_cfg, user_quant) -> str | None:

@@ -217,7 +217,10 @@ def _validate_layer(w: torch.nn.Module) -> _Profile:
             raise ValueError("Gluon Petit Kimi K3 requires SiTU beta=4, linear_beta=25")
         if w.w13_input_layout != "concatenated":
             raise ValueError("Gluon Petit Kimi K3 requires concatenated W13 input")
-        if w.w13_weight_bias is not None or w.w2_weight_bias is not None:
+        if (
+            getattr(w, "w13_weight_bias", None) is not None
+            or getattr(w, "w2_weight_bias", None) is not None
+        ):
             raise ValueError("Gluon Petit Kimi K3 requires bias-free experts")
         return profile
 
