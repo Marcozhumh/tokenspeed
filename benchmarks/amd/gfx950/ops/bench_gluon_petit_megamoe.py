@@ -18,10 +18,12 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
-"""Benchmark GPT OSS 120B and DSV4 MegaMoE profiles with EP8 and graph timing.
+"""Benchmark GPT OSS 120B, DSV4 and Kimi K3 MegaMoE with EP8 and graph timing.
 
 Each timed iteration includes top-k routing, activation quantization, dispatch,
 both expert projections, return, and combine, from BF16 inputs to BF16 outputs.
+All profiles use the native Petit benchmark's synthetic softmax top-k routing
+on random inputs, without correction bias; K3 serving uses sigmoid routing.
 """
 
 from __future__ import annotations
@@ -77,6 +79,16 @@ _PROFILES = {
         padded_hidden_size=7168,
         intermediate_size=3072,
         activation_function="silu",
+        bias=False,
+    ),
+    "kimi_k3": Profile(
+        model_name="Kimi-K3",
+        global_experts=896,
+        topk=16,
+        hidden_size=3584,
+        padded_hidden_size=3584,
+        intermediate_size=3072,
+        activation_function="kimi_situ",
         bias=False,
     ),
 }
