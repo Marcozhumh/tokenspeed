@@ -207,7 +207,6 @@ def test_weight_preprocessor_repacks_and_releases_source_parameters() -> None:
         inter_dim=32,
         has_bias=False,
         activation="silu",
-        petit_activation_function="silu",
     )
     layouts = []
 
@@ -269,7 +268,6 @@ def test_apply_keeps_zero_token_rank_in_collective() -> None:
         inter_dim=32,
         has_bias=False,
         activation="silu",
-        petit_activation_function="silu",
     )
     inputs = SimpleNamespace(
         tokens=torch.empty((4, 32), dtype=torch.uint8),

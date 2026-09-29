@@ -62,8 +62,6 @@ class _Profile:
     inter_dim: int
     has_bias: bool
     activation: str
-    # Value of Petit's ``MegaMoeActivationFunction`` for this profile.
-    petit_activation_function: str
 
 
 _GPT_OSS_120B_PROFILE = _Profile(
@@ -75,7 +73,6 @@ _GPT_OSS_120B_PROFILE = _Profile(
     inter_dim=3072,
     has_bias=True,
     activation="swiglu",
-    petit_activation_function="swiglu",
 )
 _DSV4_PROFILE = _Profile(
     name="dsv4",
@@ -86,7 +83,6 @@ _DSV4_PROFILE = _Profile(
     inter_dim=3072,
     has_bias=False,
     activation="silu",
-    petit_activation_function="silu",
 )
 _KIMI_K3_PROFILE = _Profile(
     name="kimi_k3",
@@ -97,7 +93,6 @@ _KIMI_K3_PROFILE = _Profile(
     inter_dim=3072,
     has_bias=False,
     activation="situ",
-    petit_activation_function="kimi_situ",
 )
 _PROFILES = (_GPT_OSS_120B_PROFILE, _DSV4_PROFILE, _KIMI_K3_PROFILE)
 
@@ -298,8 +293,11 @@ def _get_workspace(device: torch.device, profile: _Profile) -> _Workspace:
         topk=profile.top_k,
         model_dim=profile.model_dim,
         activation=petit_kernel.MegaMoeActivation.mxfp4,
-        activation_function=petit_kernel.MegaMoeActivationFunction(
-            profile.petit_activation_function
+        # Petit's SiTU variant hard-codes Kimi K3's beta=4 and linear_beta=25.
+        activation_function=(
+            petit_kernel.MegaMoeActivationFunction.kimi_situ
+            if profile.name == _KIMI_K3_PROFILE.name
+            else petit_kernel.MegaMoeActivationFunction(profile.activation)
         ),
         stages=petit_kernel.MegaMoeStages.two_stage,
         inter_dim=profile.inter_dim,
