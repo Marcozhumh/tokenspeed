@@ -1493,7 +1493,7 @@ class KimiLinearMoE(nn.Module):
         )
         fused_all2all_backend = (
             All2AllBackend.GLUON_PETIT
-            if moe_backend.value == "gluon_petit"
+            if moe_backend.is_gluon_petit()
             else All2AllBackend.NONE
         )
         if self.execution_plan.use_mega_moe and (

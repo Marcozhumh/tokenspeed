@@ -37,7 +37,7 @@ register_cuda_ci(est_time=30, suite="runtime-1gpu")
 
 from tokenspeed.runtime.configs.kimi_k3_config import KimiLinearConfig
 from tokenspeed.runtime.layers.moe.topk import StandardTopKOutput, TopKOutputFormat
-from tokenspeed.runtime.layers.moe.utils import All2AllBackend
+from tokenspeed.runtime.layers.moe.utils import All2AllBackend, MoeBackend
 from tokenspeed.runtime.models import kimi_k3
 from tokenspeed.runtime.models.kimi_k3 import KimiLinearMoE
 
@@ -93,7 +93,7 @@ def test_attn_dp_replicates_dense_weights_and_selects_transport(
     monkeypatch.setattr(
         kimi_k3,
         "get_moe_backend",
-        lambda: SimpleNamespace(value=moe_backend),
+        lambda: MoeBackend(moe_backend),
     )
     plan = kimi_k3.Kimi3MoEExecutionPlan(
         use_mega_moe=mega_moe,

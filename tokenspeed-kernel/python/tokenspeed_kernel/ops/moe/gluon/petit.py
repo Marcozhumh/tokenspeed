@@ -62,6 +62,8 @@ class _Profile:
     inter_dim: int
     has_bias: bool
     activation: str
+    # Value of Petit's ``MegaMoeActivationFunction`` for this profile.
+    petit_activation_function: str
 
 
 _GPT_OSS_120B_PROFILE = _Profile(
@@ -73,6 +75,7 @@ _GPT_OSS_120B_PROFILE = _Profile(
     inter_dim=3072,
     has_bias=True,
     activation="swiglu",
+    petit_activation_function="swiglu",
 )
 _DSV4_PROFILE = _Profile(
     name="dsv4",
@@ -83,6 +86,7 @@ _DSV4_PROFILE = _Profile(
     inter_dim=3072,
     has_bias=False,
     activation="silu",
+    petit_activation_function="silu",
 )
 _KIMI_K3_PROFILE = _Profile(
     name="kimi_k3",
@@ -93,8 +97,22 @@ _KIMI_K3_PROFILE = _Profile(
     inter_dim=3072,
     has_bias=False,
     activation="situ",
+    petit_activation_function="kimi_situ",
 )
 _PROFILES = (_GPT_OSS_120B_PROFILE, _DSV4_PROFILE, _KIMI_K3_PROFILE)
+
+
+@dataclass
+class _GluonPetitState:
+    """Repacked expert weights kept on the layer's ``_moe_backend_state``."""
+
+    profile: _Profile
+    w13_weight: torch.Tensor
+    w2_weight: torch.Tensor
+    w13_scale: torch.Tensor
+    w2_scale: torch.Tensor
+    w13_bias: torch.Tensor | None
+    w2_bias: torch.Tensor | None
 
 
 def _release_parameter(module: torch.nn.Module, name: str) -> None:
@@ -281,7 +299,7 @@ def _get_workspace(device: torch.device, profile: _Profile) -> _Workspace:
         model_dim=profile.model_dim,
         activation=petit_kernel.MegaMoeActivation.mxfp4,
         activation_function=petit_kernel.MegaMoeActivationFunction(
-            "kimi_situ" if profile.activation == "situ" else profile.activation
+            profile.petit_activation_function
         ),
         stages=petit_kernel.MegaMoeStages.two_stage,
         inter_dim=profile.inter_dim,
@@ -313,7 +331,6 @@ def gluon_petit_mxfp4_megamoe_weights(plan: dict, w: torch.nn.Module) -> None:
     """
     del plan
     profile = _validate_layer(w)
-    w.gluon_petit_profile = profile
     _get_workspace(w.w13_weight.device, profile)
     petit_kernel = _import_petit_kernel()
 
@@ -369,12 +386,15 @@ def gluon_petit_mxfp4_megamoe_weights(plan: dict, w: torch.nn.Module) -> None:
             petit_format=True,
         )
 
-    w.gluon_petit_w13_weight = w13.contiguous()
-    w.gluon_petit_w2_weight = w2.contiguous()
-    w.gluon_petit_w13_scale = s13.contiguous()
-    w.gluon_petit_w2_scale = s2.contiguous()
-    w.gluon_petit_w13_bias = None if b13 is None else b13.contiguous()
-    w.gluon_petit_w2_bias = None if b2 is None else b2.contiguous()
+    w._moe_backend_state = _GluonPetitState(
+        profile=profile,
+        w13_weight=w13.contiguous(),
+        w2_weight=w2.contiguous(),
+        w13_scale=s13.contiguous(),
+        w2_scale=s2.contiguous(),
+        w13_bias=None if b13 is None else b13.contiguous(),
+        w2_bias=None if b2 is None else b2.contiguous(),
+    )
     for name in (
         "w13_weight",
         "w2_weight",
@@ -468,7 +488,8 @@ def gluon_petit_mxfp4_megamoe_apply(
             "Gluon Petit MegaMoE received more than 1024 tokens on one rank"
         )
 
-    profile = w.gluon_petit_profile
+    state = w._moe_backend_state
+    profile = state.profile
     workspace = _get_workspace(x.device, profile)
     inputs = _slice_inputs(workspace.inputs, num_tokens)
     if num_tokens:
@@ -480,13 +501,13 @@ def gluon_petit_mxfp4_megamoe_apply(
     output = x.new_empty((num_tokens, profile.model_dim))
     return workspace.config.run(
         workspace.heap,
-        w.gluon_petit_w13_weight,
-        w.gluon_petit_w2_weight,
-        w.gluon_petit_w13_scale,
-        w.gluon_petit_w2_scale,
+        state.w13_weight,
+        state.w2_weight,
+        state.w13_scale,
+        state.w2_scale,
         num_tokens,
-        w13_bias=w.gluon_petit_w13_bias,
-        w2_bias=w.gluon_petit_w2_bias,
+        w13_bias=state.w13_bias,
+        w2_bias=state.w2_bias,
         out=output,
         inputs=inputs,
     )

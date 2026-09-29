@@ -28,6 +28,7 @@ from tokenspeed_kernel.ops.moe.gluon.petit import (
     _DSV4_PROFILE,
     _GPT_OSS_120B_PROFILE,
     _KIMI_K3_PROFILE,
+    _GluonPetitState,
     _Profile,
     _validate_layer,
     gluon_petit_mxfp4_megamoe_apply,
@@ -196,6 +197,7 @@ def test_weight_preprocessor_repacks_and_releases_source_parameters() -> None:
     _register_parameter(module, "w2_weight_scale", (2, 64, 1))
     module.w13_weight_bias = None
     module.w2_weight_bias = None
+    module._moe_backend_state = None
     profile = _Profile(
         name="test",
         num_experts=2,
@@ -205,6 +207,7 @@ def test_weight_preprocessor_repacks_and_releases_source_parameters() -> None:
         inter_dim=32,
         has_bias=False,
         activation="silu",
+        petit_activation_function="silu",
     )
     layouts = []
 
@@ -240,11 +243,12 @@ def test_weight_preprocessor_repacks_and_releases_source_parameters() -> None:
     ):
         gluon_petit_mxfp4_megamoe_weights(plan={}, w=module)
 
-    assert module.gluon_petit_profile == profile
-    assert module.gluon_petit_w13_weight.shape == (2, 64, 256)
-    assert module.gluon_petit_w13_scale.shape == (2, 64, 16)
-    assert module.gluon_petit_w2_weight.shape == (2, 512, 16)
-    assert module.gluon_petit_w2_scale.shape == (2, 512, 1)
+    state = module._moe_backend_state
+    assert state.profile == profile
+    assert state.w13_weight.shape == (2, 64, 256)
+    assert state.w13_scale.shape == (2, 64, 16)
+    assert state.w2_weight.shape == (2, 512, 16)
+    assert state.w2_scale.shape == (2, 512, 1)
     assert layouts == [native_layout, native_layout]
     for name in (
         "w13_weight",
@@ -265,6 +269,7 @@ def test_apply_keeps_zero_token_rank_in_collective() -> None:
         inter_dim=32,
         has_bias=False,
         activation="silu",
+        petit_activation_function="silu",
     )
     inputs = SimpleNamespace(
         tokens=torch.empty((4, 32), dtype=torch.uint8),
@@ -276,13 +281,15 @@ def test_apply_keeps_zero_token_rank_in_collective() -> None:
     config.run.side_effect = lambda *args, **kwargs: kwargs["out"]
     workspace = SimpleNamespace(config=config, heap=object(), inputs=inputs)
     layer = SimpleNamespace(
-        gluon_petit_profile=profile,
-        gluon_petit_w13_weight=torch.empty(0),
-        gluon_petit_w2_weight=torch.empty(0),
-        gluon_petit_w13_scale=torch.empty(0),
-        gluon_petit_w2_scale=torch.empty(0),
-        gluon_petit_w13_bias=None,
-        gluon_petit_w2_bias=None,
+        _moe_backend_state=_GluonPetitState(
+            profile=profile,
+            w13_weight=torch.empty(0),
+            w2_weight=torch.empty(0),
+            w13_scale=torch.empty(0),
+            w2_scale=torch.empty(0),
+            w13_bias=None,
+            w2_bias=None,
+        )
     )
     overlap = mock.Mock()
     x = torch.empty((0, profile.model_dim), dtype=torch.bfloat16)

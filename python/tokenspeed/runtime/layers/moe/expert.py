@@ -45,6 +45,10 @@ from tokenspeed.runtime.layers.moe.utils import (
 from tokenspeed.runtime.layers.moe.weights import create_layer_weights
 from tokenspeed.runtime.layers.moe.weights.loaders import round_up
 from tokenspeed.runtime.layers.quantization.base_config import QuantizationConfig
+from tokenspeed.runtime.layers.quantization.compressed_tensors.compressed_tensors import (
+    CompressedTensorsConfig,
+)
+from tokenspeed.runtime.layers.quantization.mxfp4 import Mxfp4Config
 from tokenspeed.runtime.layers.quantization.utils import (
     should_exclude_quant_module,
     should_ignore_quant_layer,
@@ -94,13 +98,6 @@ class MoELayer(torch.nn.Module):
         self.hidden_size = hidden_size
         self.intermediate_size = intermediate_size
         self.quant_config = quant_config
-        self.gluon_petit_profile: object | None = None
-        self.gluon_petit_w13_weight: torch.Tensor | None = None
-        self.gluon_petit_w2_weight: torch.Tensor | None = None
-        self.gluon_petit_w13_scale: torch.Tensor | None = None
-        self.gluon_petit_w2_scale: torch.Tensor | None = None
-        self.gluon_petit_w13_bias: torch.Tensor | None = None
-        self.gluon_petit_w2_bias: torch.Tensor | None = None
         self.ep_num_redundant_experts = global_server_args_dict[
             "ep_num_redundant_experts"
         ]
@@ -265,11 +262,6 @@ class MoELayer(torch.nn.Module):
             internal_activation_dtype = self._internal_activation_dtype_override
 
         if self._spec.use_gluon_petit:
-            from tokenspeed.runtime.layers.quantization.compressed_tensors.compressed_tensors import (
-                CompressedTensorsConfig,
-            )
-            from tokenspeed.runtime.layers.quantization.mxfp4 import Mxfp4Config
-
             if internal_activation_dtype not in {"input", "mxfp4"}:
                 raise ValueError(
                     "Gluon Petit MegaMoE requires MXFP4 activations; "
@@ -301,10 +293,14 @@ class MoELayer(torch.nn.Module):
                     "without EPLB or redundant experts"
                 )
             if self._quant_kind != "mxfp4" or not (
-                isinstance(self.quant_config, Mxfp4Config)
-                and self.quant_config.is_checkpoint_mxfp4_serialized
-                or isinstance(self.quant_config, CompressedTensorsConfig)
-                and self.quant_config.quant_format == "mxfp4-pack-quantized"
+                (
+                    isinstance(self.quant_config, Mxfp4Config)
+                    and self.quant_config.is_checkpoint_mxfp4_serialized
+                )
+                or (
+                    isinstance(self.quant_config, CompressedTensorsConfig)
+                    and self.quant_config.quant_format == "mxfp4-pack-quantized"
+                )
             ):
                 raise ValueError(
                     "Gluon Petit MegaMoE requires serialized MXFP4 expert weights"
