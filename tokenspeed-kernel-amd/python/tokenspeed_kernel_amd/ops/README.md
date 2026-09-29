@@ -167,12 +167,15 @@ and unknown selectors always raise.
 
 #### Algorithm
 
-M is consumed in 16-row chunks, and each chunk re-reads B. `N` divisible by
-64 uses a four-warp `16 x 64` tile; other accepted `N` uses one warp and a
-`16 x 16` tile. The dense path triple-buffers TDM loads. KDA QKVFAB uses
-seven buffers. Once the K tiles fill that pipeline, the tail lowers the TDM
-wait before each remaining LDS read. Short K dimensions prefetch only
-valid tiles and drain each remaining pair before reading it.
+M is consumed in 16-row chunks, and each chunk re-reads B. General dense
+projections use a two-warp `16 x 32` tile when `N` is divisible by 32 and has
+at least 192 such tiles; other accepted `N` uses one warp and a `16 x 16`
+tile. They use 256-wide K tiles when K is divisible by 256, falling back to
+128-wide tiles otherwise, and request six TDM buffers. KDA QKVFAB keeps its
+one-warp `16 x 16 x 128` tile and seven buffers. The buffer count is clamped
+to the K tiles available per split. Once the K tiles fill that pipeline, the
+tail lowers the TDM wait before each remaining LDS read. Short K dimensions
+prefetch only valid tiles and drain each remaining pair before reading it.
 
 Both paths accumulate in FP32 and round to BF16 once. Direct launches store
 that conversion from the producer. Split-K launches write one FP32 partial
@@ -346,6 +349,37 @@ than 8 (base 2); FP8 keeps the exact maximum so P stays at most 1 before its
 FP8 conversion. A wave skips the rescale when none of its rows moved. Empty
 asm statements keep LLVM from moving each cluster's results across cluster
 barriers.
+
+### gfx1250 MLA prefill
+
+`gluon_mla_prefill_gfx1250` computes the same dense, non-absorbed attention
+as the gfx950 kernels, with WMMA and TDM.
+
+#### Contract
+
+- Queries, keys, values, dtypes, `cu_seqlens_q`, `cu_seqlens_kv`, causal
+  alignment, and the unsupported `logit_cap` are the gfx950 entry's.
+- The output is BF16 unless the caller passes a buffer, which may be any
+  floating dtype with a contiguous last dimension. The optional log-sum-exp
+  is FP32 in natural-log units.
+- The grid is one workgroup per sequence, head, and 128-row query block.
+  `max_seqlen_kv` and `seq_lens_kv` are ignored.
+
+#### Algorithm
+
+Four warps own 32 rows each of a 128-row query block and walk 64-key tiles
+with base-2 online softmax. TDM streams the NoPE and RoPE halves of K and all
+of V into double-buffered LDS, one tile ahead. Tiles below the first query
+row's causal limit skip masking.
+
+16-bit inputs keep Q in registers and run one wave per SIMD. Tiles at or past
+the causal limit mask the scores and zero the value rows past the key tail.
+
+FP8 inputs stage Q in LDS, split the NoPE QK into two 64-wide WMMAs, and run
+three waves per SIMD. Fully visible tiles run in their own loop without mask
+code, and the boundary tiles mask keys only, since rows past `q_len` are
+never stored. V is not masked: TDM zero-fills tile rows past `kv_len`, and
+those keys score `-inf`.
 
 ## Sampling
 
