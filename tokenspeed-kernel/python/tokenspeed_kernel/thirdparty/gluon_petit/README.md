@@ -61,6 +61,12 @@ Partial scale loads suppress inactive lanes at the instruction: an out-of-range
 buffer address alone still writes zeros to LDS and can overwrite valid scales.
 The barrier utilities document publication scope and payload acquire semantics.
 
+Buffer resource methods call the LLVM adapter directly. The four-word load
+helper is shared with callers that need a tuple of register values rather than
+the array layout returned by `BufferResource.Load`. Refactoring these interfaces
+must preserve the generated MegaMoE assembly, including instruction-level
+predication for LDS loads.
+
 ## Validation
 
 Run the GFX950 helper tests and the EP8 sparse-weight numerical reference:

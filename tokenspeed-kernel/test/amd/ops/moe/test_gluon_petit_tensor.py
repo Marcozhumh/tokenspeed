@@ -28,6 +28,7 @@ from tokenspeed_kernel.thirdparty.gluon_petit import load_petit_kernel
 petit_kernel = load_petit_kernel()
 
 from lib.gemm.rocm.intrinsics import (
+    BufferResource,
     amdgcn_cvt_scalef32_pk_fp4_f32,
     amdgcn_s_waitcnt_barrier,
 )
@@ -42,6 +43,41 @@ pytestmark = pytest.mark.skipif(
     or not torch.cuda.get_device_properties(0).gcnArchName.startswith("gfx950"),
     reason="requires GFX950",
 )
+
+
+@g.jit
+def _buffer_resource_copy(source, copied, width: l.constexpr, masked: l.constexpr):
+    lane = l.arange(0, 256, layout=l.BlockedLayout([1], [64], [4], [0]))
+    source_resource = MakeBufferResource(source, (256 * width + 4) * 4)
+    target_resource = MakeBufferResource(copied, (256 * width + 4) * 4)
+    offset = lane * width * 4
+    if width == 2:
+        value = BufferResource.LoadU64(source_resource, offset, 16, 0)
+        BufferResource.StoreU64(target_resource, offset, 16, value, 0)
+    else:
+        value = BufferResource.LoadU32(source_resource, offset, 16, 0)
+        if masked:
+            BufferResource.StoreU32(
+                target_resource, offset, 16, value, 0, predicate=lane % 3 != 0
+            )
+        else:
+            BufferResource.StoreU32(
+                target_resource, offset, 16, value, 0, predicate=True
+            )
+
+
+@pytest.mark.parametrize("width,masked", ((1, False), (1, True), (2, False)))
+def test_buffer_resource_copy(width, masked):
+    source = torch.randint(
+        -(1 << 31), 1 << 31, (256 * width + 8,), device="cuda", dtype=torch.int32
+    )
+    copied = torch.full_like(source, -7)
+    _buffer_resource_copy[(1,)](source, copied, width, masked)
+    expected = torch.full_like(source, -7)
+    expected[4:-4] = source[4:-4]
+    if masked:
+        expected[4:-4:3] = -7
+    torch.testing.assert_close(copied, expected, atol=0, rtol=0)
 
 
 @g.jit
