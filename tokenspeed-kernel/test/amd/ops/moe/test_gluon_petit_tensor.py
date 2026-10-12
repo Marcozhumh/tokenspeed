@@ -34,7 +34,16 @@ from lib.gemm.rocm.intrinsics import (
 )
 from lib.moe.rocm.mem.input_mxfp4_packed import PackedInputState
 from lib.moe.rocm.memory_ops import MakeBufferResource
-from lib.tal.tensor_ops import atomic_add, atomic_or, load_words, store_words
+from lib.tal.tensor_ops import (
+    atomic_add,
+    atomic_or,
+    group_gather,
+    group_max,
+    load_words,
+    store_words,
+    transpose_packed_bytes,
+    wave_inclusive_sum,
+)
 from triton.experimental.gluon import language as l
 from utils import assert_no_triton_compile
 
@@ -105,6 +114,63 @@ def test_masked_memory(count):
         if lane % 3:
             expected |= 1 << (lane % 16)
     assert bits.item() == expected
+
+
+@g.jit
+def _tensor_groups(
+    source,
+    maxima,
+    gathered,
+    scanned,
+    transposed,
+    reduced,
+    count: l.constexpr,
+    width: l.constexpr,
+):
+    index = l.arange(0, count, layout=l.BlockedLayout([1], [64], [l.num_warps()], [0]))
+    value = l.load(source + index)
+    l.store(gathered + index, group_gather(value, value % width, width))
+    l.store(scanned + index, wave_inclusive_sum(value))
+    l.store(transposed + index, transpose_packed_bytes(value.to(l.uint32)))
+    l.store(reduced + index, group_max(l.load(maxima + index), 8))
+
+
+@pytest.mark.parametrize("count,num_warps", ((64, 1), (64, 4), (256, 4), (512, 8)))
+@pytest.mark.parametrize("width", (4, 32, 64))
+def test_tensor_groups_preserve_wave_boundaries(count, num_warps, width):
+    source = torch.randint(0, 1 << 30, (count,), device="cuda", dtype=torch.int32)
+    maxima = torch.randn(count, device="cuda")
+    maxima[5] = float("nan")
+    gathered, scanned, transposed = [torch.empty_like(source) for _ in range(3)]
+    reduced = torch.empty_like(maxima)
+    kernel = _tensor_groups[(1,)](
+        source,
+        maxima,
+        gathered,
+        scanned,
+        transposed,
+        reduced,
+        count,
+        width,
+        num_warps=num_warps,
+    )
+    groups = source.reshape(-1, width)
+    expected_gather = groups.gather(1, (groups % width).long()).flatten()
+    expected_scan = source.reshape(-1, 64).cumsum(1).flatten().to(torch.int32)
+    words = source.long().reshape(-1, 4)
+    byte_shifts = torch.arange(4, device="cuda") * 8
+    byte_matrix = (words[:, :, None] >> byte_shifts) & 0xFF
+    expected_transpose = (byte_matrix << byte_shifts[None, :, None]).sum(1)
+    expected_max = maxima.reshape(-1, 8).amax(1).repeat_interleave(8)
+    torch.testing.assert_close(gathered, expected_gather, atol=0, rtol=0)
+    torch.testing.assert_close(scanned, expected_scan, atol=0, rtol=0)
+    torch.testing.assert_close(
+        transposed, expected_transpose.flatten().to(torch.int32), atol=0, rtol=0
+    )
+    torch.testing.assert_close(reduced, expected_max, atol=0, rtol=0, equal_nan=True)
+    # These operations must not introduce communication between independent waves.
+    assert kernel.metadata.shared == 0
+    assert "s_barrier" not in kernel.asm["amdgcn"]
 
 
 @g.jit
